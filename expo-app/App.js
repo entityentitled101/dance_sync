@@ -14,20 +14,21 @@ import { StatusBar } from 'expo-status-bar';
 import { DeviceMotion } from 'expo-sensors';
 
 const { width, height } = Dimensions.get('window');
-
+// 音色预设配置 (3个核心音色)
 const PRESETS = [
-  { id: 0, name: 'DEFAULT (FIST)', desc: '深沉正弦波 | 铺底背景' },
-  { id: 1, name: 'AGILE PULSE', desc: '锐利方波 | 激光线条' },
-  { id: 2, name: 'ETHEREAL VOID', desc: '空灵神圣 | 天籁之音' },
-  { id: 3, name: 'SYMPHONIC', desc: '交响宏大 | 弦乐厚重' },
+  { id: 0, name: 'CLASSICAL', desc: '钢琴 | 提琴 | 铜管 | 全奏' },
+  { id: 1, name: 'CYBER PUNK', desc: '底鼓 | 吉他 | 贝斯 | 噪音' },
+  { id: 2, name: 'WARZONE', desc: '嗡鸣 | 螺旋桨 | 警报 | 爆炸' },
 ];
 
 export default function App() {
-  const [currentPreset, setCurrentPreset] = useState(1);
+  const [currentPreset, setCurrentPreset] = useState(0); // 默认钢琴
   const [velocity, setVelocity] = useState(0);
   const [energy, setEnergy] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
-  const [serverIp, setServerIp] = useState('192.168.1.92'); // 默认IP
+  const [serverIp, setServerIp] = useState('192.168.1.92');
+  const [intensity, setIntensity] = useState(0); // 0-3 四个阶段
+
   const wsRef = useRef(null);
   const velocityBuffer = useRef([]);
 
@@ -68,7 +69,8 @@ export default function App() {
       if (!motionData || !motionData.acceleration) return;
 
       const { x, y, z } = motionData.acceleration;
-      const instantVelocity = Math.sqrt(x * x + y * y + z * z) * 100;
+      // 增加灵敏度
+      const instantVelocity = Math.sqrt(x * x + y * y + z * z) * 120;
       setVelocity(Math.round(instantVelocity));
 
       velocityBuffer.current.push(instantVelocity);
@@ -79,27 +81,40 @@ export default function App() {
       const avgEnergy = velocityBuffer.current.reduce((a, b) => a + b, 0) / velocityBuffer.current.length;
       setEnergy(Math.min(100, Math.round(avgEnergy)));
 
-      // 发送数据到 WebSocket 服务器
+      // 发送数据 (包含 intensity)
       if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: 'motion',
           velocity: instantVelocity,
           energy: avgEnergy,
-          preset: currentPreset
+          preset: currentPreset,
+          intensity: intensity // 发送新的层级信息
         }));
       }
     });
 
     return () => subscription && subscription.remove();
-  }, [wsConnected, currentPreset]);
+  }, [wsConnected, currentPreset, intensity]); // 添加 intensity 依赖
 
   // 切换音色
   const switchPreset = (presetId) => {
     setCurrentPreset(presetId);
+    setIntensity(0); // 切换音色时重置层级
     if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'preset',
         value: presetId
+      }));
+    }
+  };
+
+  // 改变层级
+  const changeIntensity = (newLevel) => {
+    setIntensity(newLevel);
+    if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'intensity',
+        value: newLevel
       }));
     }
   };
@@ -118,9 +133,10 @@ export default function App() {
       {/* 连接界面 */}
       {!wsConnected && (
         <View style={styles.connectContainer}>
+          {/* ... (保持不变) ... */}
+          {/* 需要重新包含这里的组件，因为是全部替换 */}
           <Text style={styles.connectTitle}>WebSocket 传感器</Text>
           <Text style={styles.connectHint}>输入电脑 IP 地址</Text>
-
           <TextInput
             style={styles.ipInput}
             value={serverIp}
@@ -129,14 +145,12 @@ export default function App() {
             placeholderTextColor="#666"
             keyboardType="decimal-pad"
           />
-
           <TouchableOpacity
             style={styles.connectButton}
             onPress={connectWebSocket}
           >
             <Text style={styles.connectButtonText}>连接服务器</Text>
           </TouchableOpacity>
-
           <Text style={styles.connectInfo}>
             确保电脑已运行：{'\n'}
             node ws-server.js
@@ -155,7 +169,7 @@ export default function App() {
             <Text style={styles.energyText}>{energy}%</Text>
           </View>
 
-          {/* 音色按钮 */}
+          {/* 音色按钮 (3个并排) */}
           <View style={styles.buttonsContainer}>
             {PRESETS.map((preset) => (
               <TouchableOpacity
@@ -170,25 +184,49 @@ export default function App() {
                   styles.presetButtonText,
                   currentPreset === preset.id && styles.presetButtonTextActive
                 ]}>
-                  {preset.id + 1}
+                  {preset.name.split(' ')[0]}
                 </Text>
               </TouchableOpacity>
             ))}
+          </View>
+
+          {/* 当前音色描述 */}
+          <View style={styles.presetInfo}>
+            <Text style={styles.presetDesc}>{PRESETS[currentPreset].desc}</Text>
+          </View>
+
+          {/* 层级滑动控制 (自定义 UI) */}
+          <View style={styles.intensityContainer}>
+            <Text style={styles.intensityTitle}>LAYER INTENSITY (层级叠加)</Text>
+            <View style={styles.intensityTrack}>
+              {[0, 1, 2, 3].map((level) => (
+                <TouchableOpacity
+                  key={level}
+                  style={[
+                    styles.intensityStep,
+                    level <= intensity && styles.intensityStepActive
+                  ]}
+                  onPress={() => changeIntensity(level)}
+                >
+                  <Text style={{
+                    color: level <= intensity ? '#000' : '#888',
+                    fontWeight: 'bold'
+                  }}>
+                    {level + 1}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={styles.intensityLabels}>
+              <Text style={styles.intensityLabel}>Base (基础)</Text>
+              <Text style={styles.intensityLabel}>Full (全开)</Text>
+            </View>
           </View>
 
           {/* 速度显示 */}
           <View style={styles.infoSection}>
             <Text style={styles.velocityLabel}>速度</Text>
             <Text style={styles.velocityValue}>{velocity} cm/s</Text>
-            <Text style={styles.velocityHint}>
-              能量: {energy}% | 音色: {currentPreset + 1}
-            </Text>
-          </View>
-
-          {/* 当前音色 */}
-          <View style={styles.presetInfo}>
-            <Text style={styles.presetName}>[{currentPreset + 1}] {PRESETS[currentPreset].name}</Text>
-            <Text style={styles.presetDesc}>{PRESETS[currentPreset].desc}</Text>
           </View>
 
           {/* 断开按钮 */}
@@ -300,17 +338,18 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     fontWeight: '300',
   },
+  // 重写按钮容器样式
   buttonsContainer: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
-    gap: 15,
+    marginTop: 20,
+    gap: 10,
   },
   presetButton: {
-    width: (width - 60) / 2,
-    height: 80,
-    borderWidth: 2,
+    flex: 1,
+    height: 60,
+    borderWidth: 1,
     borderColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
@@ -321,14 +360,82 @@ const styles = StyleSheet.create({
   },
   presetButtonText: {
     color: '#fff',
-    fontSize: 32,
-    fontWeight: '300',
+    fontSize: 14,
+    fontWeight: '600',
   },
   presetButtonTextActive: {
     color: '#000',
   },
-  infoSection: {
+  presetInfo: {
+    marginTop: 15,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+  },
+  presetDesc: {
+    color: '#888',
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  // 层级控制样式 (更明显的推子风格)
+  intensityContainer: {
     marginTop: 40,
+    paddingHorizontal: 30,
+    marginBottom: 20,
+    alignItems: 'center',
+  },
+  intensityTitle: {
+    color: '#888',
+    fontSize: 10,
+    letterSpacing: 2,
+    marginBottom: 15,
+    fontWeight: '600',
+  },
+  // 模拟滑块轨道
+  intensityTrack: {
+    flexDirection: 'row',
+    height: 60,                // 加高，更易触控
+    backgroundColor: '#1a1a1a', // 深色轨道背景
+    borderRadius: 30,
+    padding: 5,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  // 滑块按钮
+  intensityStep: {
+    width: 50,                // 更大的触控区
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#333',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  intensityStepActive: {
+    backgroundColor: '#fff',   // 选中高亮
+    shadowColor: "#fff",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 5,
+    transform: [{ scale: 1.1 }] // 选中放大效果
+  },
+  intensityLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginTop: 8,
+    paddingHorizontal: 15,
+  },
+  intensityLabel: {
+    color: '#666',
+    fontSize: 10,
+    letterSpacing: 1,
+  },
+
+  infoSection: {
+    marginTop: 20,
     alignItems: 'center',
   },
   velocityLabel: {
@@ -342,37 +449,14 @@ const styles = StyleSheet.create({
     fontSize: 48,
     fontWeight: '200',
   },
-  velocityHint: {
-    color: '#666',
-    fontSize: 11,
-    marginTop: 8,
-  },
-  presetInfo: {
-    marginTop: 30,
-    paddingHorizontal: 20,
-    alignItems: 'center',
-  },
-  presetName: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '300',
-    letterSpacing: 1,
-    marginBottom: 5,
-  },
-  presetDesc: {
-    color: '#666',
-    fontSize: 14,
-    fontWeight: '300',
-  },
   disconnectButton: {
-    position: 'absolute',
-    bottom: 30,
-    left: width * 0.2,
-    right: width * 0.2,
-    paddingVertical: 12,
+    marginTop: 30,
+    alignSelf: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 30,
     borderWidth: 1,
-    borderColor: '#666',
-    alignItems: 'center',
+    borderColor: '#444',
+    borderRadius: 20,
   },
   disconnectButtonText: {
     color: '#666',
