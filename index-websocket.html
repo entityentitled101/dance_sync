@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 音频引擎 - 体感DJ</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body {
+            background-color: #000;
+            margin: 0;
+            overflow: hidden;
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #start-btn {
+            padding: 20px 40px;
+            font-size: 18px;
+            letter-spacing: 4px;
+            background: #fff;
+            color: #000;
+            border: none;
+            cursor: pointer;
+            transition: all 0.4s;
+        }
+
+        #start-btn:hover {
+            background: #000;
+            color: #fff;
+            border: 1px solid #fff;
+        }
+
+        #status {
+            margin-top: 30px;
+            font-size: 14px;
+            opacity: 0.7;
+            letter-spacing: 2px;
+        }
+
+        #info {
+            margin-top: 20px;
+            text-align: center;
+            line-height: 1.8;
+        }
+
+        .dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #f00;
+            margin-right: 8px;
+        }
+
+        .dot.active {
+            background: #0f0;
+        }
+    </style>
+</head>
+
+<body>
+
+    <button id="start-btn">启动音频系统</button>
+    <div id="status">
+        <span class="dot" id="ws-dot"></span> WebSocket: <span id="ws-status">未连接</span>
+    </div>
+    <div id="info">
+        <div>速度: <span id="velocity">0</span> cm/s</div>
+        <div>能量: <span id="energy">0</span>%</div>
+        <div>音色: <span id="preset">1</span></div>
+    </div>
+
+    <script>
+        const startBtn = document.getElementById('start-btn');
+        const wsStatus = document.getElementById('ws-status');
+        const wsDot = document.getElementById('ws-dot');
+        const velocityDisplay = document.getElementById('velocity');
+        const energyDisplay = document.getElementById('energy');
+        const presetDisplay = document.getElementById('preset');
+
+        let ws = null;
+        let isStarted = false;
+        let currentFingers = 0;
+
+        // 音频引擎变量
+        let leadSynth, kickSynth, mainFilter, mainReverb, delay, masterGain, kickGain;
+        let energyBuffer = [];
+        let lastTriggerTime = 0;
+        let currentKickPattern = null; // 当前底鼓节奏型
+
+        // D小调五声音阶
+        const scaleNotes = ["D2", "A2", "D3", "E3", "F3", "A3", "C4", "D4", "E4", "F4", "A4"];
+
+        // 音色预设
+        const stylePresets = [
+            { name: "DEFAULT (FIST)", rhythm: "4n" },     // 四拍
+            { name: "AGILE PULSE", rhythm: "8n" },        // 双倍速
+            { name: "ETHEREAL VOID", rhythm: "2n" },      // 慢拍
+            { name: "SYMPHONIC", rhythm: "triplet" }      // 三连音
+        ];
+
+        // 底鼓节奏型（预定义，节约性能）
+        const kickPatterns = {
+            // 音色 1: 标准四拍 (X . . . X . . .)
+            0: [1, 0, 0, 0, 1, 0, 0, 0],
+            // 音色 2: 快速双拍 (X . X . X . X .)
+            1: [1, 0, 1, 0, 1, 0, 1, 0],
+            // 音色 3: 慢拍简约 (X . . . . . X .)
+            2: [1, 0, 0, 0, 0, 0, 1, 0],
+            // 音色 4: 交响三连 (X . . X X . X . .)
+            3: [1, 0, 0, 1, 1, 0, 1, 0, 0]
+        };
+
+        // 初始化音频引擎
+        function initAudio() {
+            try {
+                masterGain = new Tone.Gain(-6, "db").toDestination();
+                kickGain = new Tone.Gain(4, "db").connect(masterGain);
+
+                mainFilter = new Tone.Filter(1500, "lowpass").connect(masterGain);
+                delay = new Tone.FeedbackDelay("8n", 0.45).connect(mainFilter);
+                mainReverb = new Tone.Reverb({ decay: 4, wet: 0.5 }).connect(delay);
+
+                leadSynth = new Tone.PolySynth(Tone.FMSynth, {
+                    maxPolyphony: 8,
+                    options: {
+                        envelope: { attack: 0.1, release: 0.8 },
+                        modulationEnvelope: { attack: 0.2, release: 0.8 }
+                    }
+                }).connect(mainReverb);
+
+                kickSynth = new Tone.MembraneSynth({
+                    pitchDecay: 0.05,
+                    octaves: 10,
+                    oscillator: { type: "sine" },
+                    envelope: { attack: 0.001, decay: 0.4, sustain: 0.01, release: 1.4 }
+                }).connect(kickGain);
+
+                Tone.Transport.bpm.value = 115;
+                applyPreset(1); // 默认预设
+
+                console.log('✅ 音频引擎初始化成功');
+            } catch (e) {
+                console.error("Audio Init Error:", e);
+            }
+        }
+
+        // 应用音色预设
+        function applyPreset(count) {
+            if (!leadSynth) return;
+
+            leadSynth.releaseAll();
+            currentFingers = count;
+            presetDisplay.innerText = count + 1;
+
+            // 停止旧的底鼓节奏
+            if (currentKickPattern) {
+                currentKickPattern.stop();
+                currentKickPattern.dispose();
+            }
+
+            switch (count) {
+                case 0: // DEFAULT - 深沉正弦波
+                    leadSynth.set({
+                        oscillator: { type: "sine" },
+                        envelope: { attack: 0.4, decay: 0.3, sustain: 0.6, release: 2 },
+                        harmonicity: 1,
+                        modulationIndex: 3
+                    });
+                    kickSynth.set({
+                        pitchDecay: 0.05,
+                        octaves: 8,
+                        envelope: { attack: 0.001, decay: 0.4, sustain: 0, release: 1.4 }
+                    });
+                    break;
+
+                case 1: // AGILE PULSE - 锐利方波
+                    leadSynth.set({
+                        oscillator: { type: "square" },
+                        envelope: { attack: 0.01, decay: 0.1, sustain: 0.4, release: 0.5 },
+                        harmonicity: 2,
+                        modulationIndex: 10
+                    });
+                    kickSynth.set({
+                        pitchDecay: 0.02,
+                        octaves: 12,
+                        envelope: { attack: 0.001, decay: 0.2, sustain: 0, release: 0.8 }
+                    });
+                    break;
+
+                case 2: // ETHEREAL VOID - 空灵神圣（多层正弦波）
+                    leadSynth.set({
+                        oscillator: { type: "sine" },
+                        envelope: { attack: 0.8, decay: 0.5, sustain: 0.7, release: 3 },
+                        harmonicity: 1.5,  // 轻微和声
+                        modulationIndex: 1  // 低调制，纯净感
+                    });
+                    // 增加混响深度
+                    mainReverb.decay = 8;
+                    mainReverb.wet.value = 0.7;
+                    kickSynth.set({
+                        pitchDecay: 0.08,
+                        octaves: 6,
+                        envelope: { attack: 0.01, decay: 0.6, sustain: 0.1, release: 2 }
+                    });
+                    break;
+
+                case 3: // SYMPHONIC - 交响宏大（弦乐质感）
+                    leadSynth.set({
+                        oscillator: { type: "sawtooth" },  // 锯齿波模拟弦乐
+                        envelope: { attack: 0.3, decay: 0.4, sustain: 0.8, release: 1.5 },
+                        harmonicity: 0.5,   // 低和声，厚重感
+                        modulationIndex: 8  // 复杂泛音
+                    });
+                    // 适中混响，营造音乐厅感
+                    mainReverb.decay = 5;
+                    mainReverb.wet.value = 0.5;
+                    kickSynth.set({
+                        pitchDecay: 0.06,
+                        octaves: 10,
+                        envelope: { attack: 0.005, decay: 0.5, sustain: 0.05, release: 1.5 }
+                    });
+                    break;
+            }
+
+            // 启动对应的底鼓节奏型
+            startKickPattern(count);
+        }
+
+        // 启动底鼓节奏型（高性能）
+        function startKickPattern(presetId) {
+            const pattern = kickPatterns[presetId];
+            let stepIndex = 0;
+
+            // 使用 Tone.Loop 代替 Sequence（更轻量级）
+            currentKickPattern = new Tone.Loop((time) => {
+                // 检查能量是否达到阈值
+                const energy = getAvgEnergy();
+
+                if (pattern[stepIndex] === 1 && energy > 0.08) {
+                    // 根据能量调整力度
+                    const velocity = 0.3 + energy * 0.7;
+                    kickSynth.triggerAttackRelease("C1", "8n", time, velocity);
+                }
+
+                // 循环索引
+                stepIndex = (stepIndex + 1) % pattern.length;
+            }, "8n"); // 每八分音符触发一次
+
+            currentKickPattern.start(0);
+        }
+
+        // 播放音符
+        function playPerformanceNote(velocity, energy) {
+            const now = performance.now();
+
+            if (now - lastTriggerTime < 60) return;
+
+            // 速度映射到音阶
+            const normalizedVel = Math.min(velocity / 200, 1);
+            const index = Math.floor(normalizedVel * (scaleNotes.length - 1));
+            const note = scaleNotes[index];
+
+            if (Tone.context.state !== 'running') Tone.context.resume();
+
+            if (velocity > 20) {
+                const duration = velocity > 100 ? "32n" : "8n";
+                leadSynth.triggerAttackRelease(note, duration);
+                lastTriggerTime = now;
+            }
+
+            const filterCutoff = Math.min(velocity * 50 + 300, 16000);
+            if (isFinite(filterCutoff)) {
+                mainFilter.frequency.rampTo(filterCutoff, 0.1);
+            }
+
+            energyBuffer.push(energy);
+            if (energyBuffer.length > 30) energyBuffer.shift();
+        }
+
+        // 计算平均能量
+        function getAvgEnergy() {
+            if (!energyBuffer.length) return 0;
+            const sum = energyBuffer.reduce((a, b) => a + b, 0);
+            const avg = (sum / energyBuffer.length) / 100;
+            return isFinite(avg) ? avg : 0;
+        }
+
+        // 连接 WebSocket
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8080');
+
+            ws.onopen = () => {
+                console.log('✅ WebSocket 已连接');
+                wsStatus.innerText = '已连接';
+                wsDot.classList.add('active');
+
+                // 注册为浏览器客户端
+                ws.send(JSON.stringify({ type: 'register', client: 'browser' }));
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'motion' && isStarted) {
+                        velocityDisplay.innerText = Math.round(data.velocity);
+                        energyDisplay.innerText = Math.round(data.energy);
+                        playPerformanceNote(data.velocity, data.energy);
+                    } else if (data.type === 'preset') {
+                        applyPreset(data.value);
+                    }
+                } catch (e) {
+                    console.error('消息解析失败:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('❌ WebSocket 错误:', error);
+                wsStatus.innerText = '连接失败';
+                wsDot.classList.remove('active');
+            };
+
+            ws.onclose = () => {
+                console.log('⚠️ WebSocket 已断开');
+                wsStatus.innerText = '已断开';
+                wsDot.classList.remove('active');
+            };
+        }
+
+        // 启动按钮
+        startBtn.onclick = async () => {
+            try {
+                await Tone.start();
+                initAudio();
+                Tone.Transport.start();
+                isStarted = true;
+                startBtn.innerText = '✅ 系统已启动';
+                startBtn.disabled = true;
+                startBtn.style.opacity = '0.5';
+
+                // 连接 WebSocket
+                connectWebSocket();
+            } catch (e) {
+                console.error(e);
+                startBtn.innerText = "重试...";
+            }
+        };
+
+        console.log('📌 使用说明:');
+        console.log('1. 点击"启动音频系统"按钮');
+        console.log('2. 在手机 Expo App 中连接到服务器');
+        console.log('3. 挥动手机，享受音乐！');
+    </script>
+</body>
+
+</html>

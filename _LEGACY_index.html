@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>体感 DJ 装置 - 高鲁棒性 V3.0</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #000; margin: 0; overflow: hidden; color: white; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; filter: contrast(1.3) brightness(1.2); }
+        #start-btn {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 100; padding: 20px 40px; font-size: 18px; letter-spacing: 4px;
+            background: #fff; color: #000; border: none; border-radius: 0;
+            cursor: pointer; transition: all 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+        }
+        #start-btn:hover { background: #000; color: #fff; border: 1px solid #fff; }
+        
+        #settings-menu {
+            position: absolute; top: 20px; right: 20px; z-index: 50;
+            background: rgba(0,0,0,0.95); border: 1px solid #444; padding: 20px;
+            width: 280px; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); 
+            transform: translateX(350px);
+            pointer-events: auto;
+        }
+        #settings-menu.open { transform: translateX(0); }
+        .menu-btn {
+            position: absolute; top: 20px; right: 20px; z-index: 60;
+            cursor: pointer; pointer-events: auto; padding: 10px;
+        }
+        .slider-row { margin-bottom: 15px; }
+        .slider-row label { display: block; font-size: 10px; margin-bottom: 5px; opacity: 0.7; letter-spacing: 1px; }
+        input[type=range] { width: 100%; accent-color: white; cursor: pointer; }
+        .ui-label { font-size: 10px; text-transform: uppercase; letter-spacing: 2px; }
+    </style>
+</head>
+<body>
+
+    <button id="start-btn">INITIALIZE SYSTEM</button>
+
+    <div id="menu-toggle" class="menu-btn hidden">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+    </div>
+
+    <div id="settings-menu">
+        <h2 class="text-sm font-bold mb-4 border-b border-white/20 pb-2 tracking-tighter">ENGINE PARAMETERS</h2>
+        <div class="slider-row">
+            <label>MASTER GAIN (dB)</label>
+            <input type="range" id="master-vol" min="-40" max="0" value="-6">
+        </div>
+        <div class="slider-row">
+            <label>BASS KICK IMPACT</label>
+            <input type="range" id="kick-vol" min="-40" max="10" value="4">
+        </div>
+        <div class="slider-row">
+            <label>REVERB DECAY</label>
+            <input type="range" id="reverb-val" min="1" max="12" value="4">
+        </div>
+        <div class="slider-row">
+            <label>GESTURE SENSITIVITY</label>
+            <input type="range" id="sens-val" min="0.5" max="5" step="0.1" value="2.5">
+        </div>
+        <div class="text-[8px] opacity-30 mt-6 text-center">STABILITY MODE: ENABLED</div>
+    </div>
+
+    <div id="ui-container" class="absolute top-0 left-0 w-full h-full pointer-events-none p-10 flex flex-col justify-between hidden">
+        <div class="flex justify-between items-start">
+            <div class="border-l-2 border-white pl-4">
+                <div class="ui-label opacity-60">Gesture State</div>
+                <div id="finger-count" class="text-4xl font-bold">0</div>
+                <div class="ui-label mt-6 opacity-40">Kinetic Momentum</div>
+                <div class="w-40 h-1 bg-white/20 mt-1">
+                    <div id="energy-bar" class="w-full h-full bg-white origin-left scale-x-0 transition-transform duration-75"></div>
+                </div>
+            </div>
+            <div class="text-right border-r-2 border-white pr-4">
+                <div class="ui-label opacity-60">Sonic Profile</div>
+                <div id="style-name" class="text-xl font-bold tracking-tight italic">ATMOSPHERIC</div>
+            </div>
+        </div>
+    </div>
+
+    <video id="input_video" style="display:none"></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const startBtn = document.getElementById('start-btn');
+        const uiContainer = document.getElementById('ui-container');
+        const energyBar = document.getElementById('energy-bar');
+        const fingerCountDisplay = document.getElementById('finger-count');
+        const styleNameDisplay = document.getElementById('style-name');
+        const menuToggle = document.getElementById('menu-toggle');
+        const settingsMenu = document.getElementById('settings-menu');
+
+        let isStarted = false;
+        let rightHandTrail = []; 
+        let energyBuffer = []; 
+        let currentFingers = 0;
+        let lastFingers = -1;
+        let lastPlayedNote = "";
+        let lastTriggerTime = 0; // 用于节流
+
+        const stylePresets = [
+            { name: "DEFAULT (FIST)", brush: "default" },
+            { name: "AGILE PULSE", brush: "laser" },
+            { name: "DEEP SAW", brush: "thick" },
+            { name: "ETHEREAL VOID", brush: "cloud" }
+        ];
+
+        let leadSynth, kickSynth, mainFilter, mainReverb, delay, masterGain, kickGain;
+
+        function initAudio() {
+            try {
+                masterGain = new Tone.Gain(-6, "db").toDestination();
+                kickGain = new Tone.Gain(4, "db").connect(masterGain);
+                
+                mainFilter = new Tone.Filter(1500, "lowpass").connect(masterGain);
+                delay = new Tone.FeedbackDelay("8n", 0.45).connect(mainFilter);
+                mainReverb = new Tone.Reverb({ decay: 4, wet: 0.5 }).connect(delay);
+                
+                // 限制最大发声数为 8，防止语音积压崩溃
+                leadSynth = new Tone.PolySynth(Tone.FMSynth, {
+                    maxPolyphony: 8,
+                    options: {
+                        envelope: { attack: 0.1, release: 0.8 },
+                        modulationEnvelope: { attack: 0.2, release: 0.8 }
+                    }
+                }).connect(mainReverb);
+
+                kickSynth = new Tone.MembraneSynth().connect(kickGain);
+
+                new Tone.Loop((time) => {
+                    const energy = getAvgEnergy();
+                    if (isStarted && energy > 0.12) {
+                        kickSynth.triggerAttackRelease("C1", "8n", time, 0.4 + energy * 0.6);
+                    }
+                }, "4n").start(0);
+
+                Tone.Transport.bpm.value = 115;
+                applyPreset(0);
+            } catch (e) {
+                console.error("Audio Init Error:", e);
+            }
+        }
+
+        function countFingers(hand) {
+            let count = 0;
+            try {
+                const fingerTips = [8, 12, 16, 20]; 
+                const fingerPips = [6, 10, 14, 18];
+                fingerTips.forEach((tip, i) => {
+                    if (hand[tip].y < hand[fingerPips[i]].y) count++;
+                });
+                const thumbDist = Math.abs(hand[4].x - hand[2].x);
+                if (thumbDist > 0.05) count++;
+            } catch(e) {}
+            return Math.min(count, 3); // 限制在 0-3 之间
+        }
+
+        function onResults(results) {
+            try {
+                canvasCtx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+                canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+                if (results.multiHandLandmarks && results.multiHandedness) {
+                    results.multiHandLandmarks.forEach((landmarks, index) => {
+                        const label = results.multiHandedness[index].label;
+                        const isLeftHand = label === 'Right'; // 镜像关系
+                        const x = (1 - landmarks[8].x) * canvasElement.width;
+                        const y = landmarks[8].y * canvasElement.height;
+                        
+                        drawSkeleton(landmarks);
+
+                        if (isLeftHand) {
+                            const fingers = countFingers(landmarks);
+                            if (fingers !== lastFingers) {
+                                applyPreset(fingers);
+                                lastFingers = fingers;
+                            }
+                            canvasCtx.strokeStyle = "white";
+                            canvasCtx.beginPath();
+                            canvasCtx.arc(x, y, 30 + Math.sin(Date.now()/100)*10, 0, Math.PI*2);
+                            canvasCtx.stroke();
+                        } else {
+                            handleRightHand(landmarks, x, y);
+                        }
+                    });
+                }
+            } catch (e) {
+                console.warn("Frame Processing Error:", e);
+            }
+        }
+
+        function applyPreset(count) {
+            if (!leadSynth) return;
+            
+            // 切换时强制清空所有残留语音
+            leadSynth.releaseAll();
+            
+            currentFingers = count;
+            const p = stylePresets[count];
+            fingerCountDisplay.innerText = count;
+            styleNameDisplay.innerText = p.name;
+
+            const now = Tone.now();
+            switch(count) {
+                case 0: // Fist - Atmospheric
+                    leadSynth.set({ 
+                        oscillator: { type: "sine" }, 
+                        envelope: { attack: 0.4, release: 2 },
+                        harmonicity: 1, modulationIndex: 5
+                    });
+                    break;
+                case 1: // Index - Pulse
+                    leadSynth.set({ 
+                        oscillator: { type: "square" }, 
+                        envelope: { attack: 0.01, release: 0.5 },
+                        harmonicity: 2, modulationIndex: 10
+                    });
+                    break;
+                case 2: // Middle - Thick Saw
+                    leadSynth.set({ 
+                        oscillator: { type: "sawtooth" }, 
+                        envelope: { attack: 0.1, release: 1 },
+                        harmonicity: 0.5, modulationIndex: 15
+                    });
+                    break;
+                case 3: // Ring - Ethereal
+                    leadSynth.set({ 
+                        oscillator: { type: "triangle" }, 
+                        envelope: { attack: 0.2, release: 3 },
+                        harmonicity: 1.5, modulationIndex: 20
+                    });
+                    break;
+            }
+        }
+
+        function drawSkeleton(landmarks) {
+            canvasCtx.save();
+            canvasCtx.globalAlpha = 0.2;
+            const mir = landmarks.map(l => ({ x: (1 - l.x) * canvasElement.width, y: l.y * canvasElement.height }));
+            canvasCtx.strokeStyle = "white";
+            HAND_CONNECTIONS.forEach(([i, j]) => {
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(mir[i].x, mir[i].y);
+                canvasCtx.lineTo(mir[j].x, mir[j].y);
+                canvasCtx.stroke();
+            });
+            canvasCtx.restore();
+        }
+
+        let lastPos = {x: 0, y: 0, t: 0};
+        function handleRightHand(hand, x, y) {
+            rightHandTrail.push({x, y});
+            if (rightHandTrail.length > 40) rightHandTrail.shift();
+
+            const style = stylePresets[currentFingers].brush;
+            canvasCtx.save();
+            canvasCtx.strokeStyle = "white";
+            canvasCtx.shadowBlur = 0;
+            canvasCtx.setLineDash([]);
+
+            if (style === "laser") { canvasCtx.shadowBlur = 15; canvasCtx.shadowColor = "white"; drawTrailLines(2); }
+            else if (style === "thick") { drawTrailLines(18); }
+            else if (style === "cloud") { canvasCtx.globalAlpha = 0.4; drawTrailLines(55); }
+            else { drawTrailLines(4); }
+            canvasCtx.restore();
+
+            const now = performance.now();
+            const dt = (now - lastPos.t) / 1000;
+            if (dt > 0.015) { 
+                const vel = Math.sqrt(Math.pow(x-lastPos.x,2)+Math.pow(y-lastPos.y,2))/dt;
+                energyBuffer.push(vel);
+                if (energyBuffer.length > 80) energyBuffer.shift();
+                
+                if (isStarted && vel > 200) { 
+                    playPerformanceNote(hand[8].y, vel, now);
+                } else if (vel < 120) {
+                    lastPlayedNote = ""; 
+                }
+                
+                lastPos = {x, y, t: now};
+                const sensitivity = parseFloat(document.getElementById('sens-val').value);
+                const momentum = Math.min(getAvgEnergy() * sensitivity, 1);
+                if (isFinite(momentum)) energyBar.style.transform = `scaleX(${momentum})`;
+            }
+        }
+
+        function drawTrailLines(width) {
+            canvasCtx.lineWidth = width;
+            canvasCtx.beginPath();
+            if (rightHandTrail.length < 2) return;
+            canvasCtx.moveTo(rightHandTrail[0].x, rightHandTrail[0].y);
+            for (let i = 1; i < rightHandTrail.length; i++) {
+                canvasCtx.lineTo(rightHandTrail[i].x, rightHandTrail[i].y);
+            }
+            canvasCtx.stroke();
+        }
+
+        const scaleNotes = ["D2", "A2", "D3", "E3", "F3", "A3", "C4", "D4", "E4", "F4", "A4"];
+        function playPerformanceNote(y, vel, now) {
+            // 节流保护：每 60ms 才能触发一次新音符，防止语音池溢出
+            if (now - lastTriggerTime < 60) return;
+
+            const index = Math.floor(Math.max(0, Math.min(1 - y, 0.99)) * scaleNotes.length);
+            const note = scaleNotes[index];
+            
+            if (Tone.context.state !== 'running') Tone.context.resume();
+
+            if (note !== lastPlayedNote || vel > 3500) {
+                const duration = vel > 2800 ? "32n" : "8n";
+                leadSynth.triggerAttackRelease(note, duration);
+                lastPlayedNote = note;
+                lastTriggerTime = now;
+            }
+            
+            const filterCutoff = Math.min(vel * 1.6 + 150, 16000);
+            if (isFinite(filterCutoff)) {
+                mainFilter.frequency.rampTo(filterCutoff, 0.1);
+            }
+        }
+
+        function getAvgEnergy() {
+            if (!energyBuffer.length) return 0;
+            const sum = energyBuffer.reduce((a, b) => a + b, 0);
+            const avg = (sum / energyBuffer.length) / 6000;
+            return isFinite(avg) ? avg : 0;
+        }
+
+        menuToggle.onclick = () => settingsMenu.classList.toggle('open');
+        document.getElementById('master-vol').oninput = (e) => masterGain.volume.rampTo(e.target.value, 0.1);
+        document.getElementById('kick-vol').oninput = (e) => kickGain.volume.rampTo(e.target.value, 0.1);
+        document.getElementById('reverb-val').oninput = (e) => mainReverb.decay = parseFloat(e.target.value);
+
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 0, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { if(isStarted) await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        startBtn.onclick = async () => {
+            try {
+                await Tone.start();
+                initAudio();
+                Tone.Transport.start();
+                await camera.start();
+                isStarted = true;
+                startBtn.classList.add('hidden');
+                uiContainer.classList.remove('hidden');
+                menuToggle.classList.remove('hidden');
+            } catch (e) {
+                console.error(e);
+                startBtn.innerText = "RETRYING...";
+            }
+        };
+
+        window.addEventListener('resize', () => {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        });
+        window.dispatchEvent(new Event('resize'));
+    </script>
+</body>
+</html>
