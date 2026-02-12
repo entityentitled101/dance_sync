@@ -89,85 +89,174 @@
         let isStarted = false;
         let currentFingers = 0;
 
-        // 音频引擎变量
+        // --- 全局变量 ---
         let leadSynth, kickSynth, droneSynth, organSynth, noiseSynth;
-        let mainFilter, mainReverb, delay, masterGain;
-        // 各个合成器的 Gain Node
+        let masterLimiter, mainReverb, heliTremolo; // 增加 Tremolo
         let leadGain, kickGain, droneGain, organGain, noiseGain;
+        let droneFilter, noiseFilter;
 
+        // 状态变量
         let energyBuffer = [];
+        let currentIntensity = 0;
+        let currentEnergy = 0;
+        let currentVelocity = 0;
         let lastTriggerTime = 0;
-        let lastKickTime = 0;
-        let currentIntensity = 0; // 0, 1, 2, 3
-        let currentArpeggiator = null;
-        let helicopterLFO = null; // 直升机震荡器
+        let sirenLFO = null;
 
-        // D小调五声音阶
-        const scaleNotes = ["D2", "A2", "D3", "E3", "F3", "A3", "C4", "D4", "E4", "F4", "A4"];
-        // 电吉他高音阶
-        const guitarScale = ["D3", "F3", "G3", "A3", "C4", "D4", "F4", "G4", "A4", "C5", "D5"];
+        // 乐理系统
+        const keyRoot = "D3";
+        const chordProgression = [
+            ["D3", "F3", "A3"], ["Bb2", "D3", "F3"], ["F3", "A3", "C4"], ["C3", "E3", "G3"]
+        ];
+        let currentChordIndex = 0;
+        const cyberScale = ["D3", "F3", "G3", "G#3", "A3", "C4", "D4", "F4"];
 
-        // 音色预设定义 (3个)
+        // 预设定义
         const stylePresets = [
-            { name: "CLASSICAL", desc: "Piano > Violin > Trumpet > Full" },
-            { name: "CYBER PUNK", desc: "Kick > Guitar > Bass > Noise" },
-            { name: "WARZONE", desc: "Drone > Helicopter > Siren > Boom" }
+            { name: "CLASSICAL", desc: "Symphony | 自动和声 | 宏大" },
+            { name: "CYBER PUNK", desc: "Techno | 强力底鼓 | 侧链" },
+            { name: "WARZONE", desc: "Cinematic | 螺旋桨 | 警报" }
         ];
 
-        // 初始化音频引擎
-        function initAudio() {
+        // --- 初始化音频系统的核心 ---
+        async function initAudio() {
             try {
-                masterGain = new Tone.Gain(-3, "db").toDestination();
+                // 1. 混音总线设计
+                masterLimiter = new Tone.Limiter(-1).toDestination();
 
-                // 效果器
-                mainFilter = new Tone.Filter(3500, "lowpass").connect(masterGain);
-                delay = new Tone.FeedbackDelay("8n", 0.2).connect(mainFilter); // 减少 Delay
-                mainReverb = new Tone.Reverb({ decay: 3, wet: 0.2 }).connect(masterGain); // 减少 Reverb
+                // Reverb: 默认全干 (Wet=0)，Lv4 才开启，模拟"空间感"作为一种特效
+                mainReverb = new Tone.Reverb({ decay: 5, wet: 0 }).connect(masterLimiter);
 
-                // --- 1. Lead (Piano / Guitar) ---
-                leadGain = new Tone.Gain(0).connect(mainReverb);
-                leadSynth = new Tone.PolySynth(Tone.FMSynth, {
+                // 直升机专用效果器 (放在总线前)
+                heliTremolo = new Tone.Tremolo(9, 1).start().connect(masterLimiter);
+                heliTremolo.wet.value = 0; // 默认关闭
+
+                // 2. 乐器初始化
+
+                // [Kick / Impact]: 直通 Master (不进 Reverb 保持有力)
+                // Cyberpunk 需要更猛的底鼓
+                kickGain = new Tone.Gain(1.0).connect(masterLimiter);
+                kickSynth = new Tone.MembraneSynth({
+                    pitchDecay: 0.1, octaves: 8, oscillator: { type: "sine" },
+                    envelope: { attack: 0.001, decay: 0.4, sustain: 0.01, release: 1.4 }
+                }).connect(kickGain);
+
+                // [Lead / Piano]: 进 Reverb (可变湿)
+                leadGain = new Tone.Gain(0.8).connect(mainReverb);
+                leadSynth = new Tone.PolySynth(Tone.Synth, {
                     maxPolyphony: 6,
-                    options: { oscillator: { type: "sine" } }
+                    options: { oscillator: { type: "triangle" }, envelope: { attack: 0.02, decay: 0.1, sustain: 0.3, release: 1 } }
                 }).connect(leadGain);
 
-                // --- 2. Drone (Strings / Bass / Helicopter) ---
-                droneGain = new Tone.Gain(0).connect(mainReverb);
-                droneSynth = new Tone.FatOscillator({
-                    type: "sawtooth", spread: 20, count: 3
-                }).start();
-                const droneFilter = new Tone.AutoFilter(0.1, 200).connect(droneGain).start();
+                // [Drone / Strings / Bass]: 进 Reverb
+                // 移除 Sidechain 以保证"最基础的低音始终占主导"
+                droneGain = new Tone.Gain(0.8).connect(mainReverb);
+                droneSynth = new Tone.FatOscillator({ type: "sawtooth", spread: 40, count: 3 }).start();
+                droneFilter = new Tone.AutoFilter(0.1, 200).connect(droneGain).start();
                 droneSynth.connect(droneFilter);
 
-                // 直升机专用 LFO
-                helicopterLFO = new Tone.LFO(8, 0, 1).start(); // 8Hz 突突突
-
-                // --- 3. Kick (Kick / Trumpet / Siren) ---
-                kickGain = new Tone.Gain(0).connect(masterGain);
-                kickSynth = new Tone.MembraneSynth().connect(kickGain);
-                // 也可以用来做简单的 FM Synth (Siren)
-
-                // --- 4. Organ / Pad / Explosion ---
-                organGain = new Tone.Gain(0).connect(mainReverb);
+                // [Organ / Brass / Siren]: 进 Reverb
+                organGain = new Tone.Gain(0.6).connect(mainReverb);
                 organSynth = new Tone.PolySynth(Tone.Synth, {
-                    maxPolyphony: 4,
-                    options: { oscillator: { type: "fatcustom", count: 3, spread: 30 } }
+                    options: { oscillator: { type: "sawtooth" }, envelope: { attack: 0.05, decay: 0.2, sustain: 0.5, release: 0.5 } }
                 }).connect(organGain);
 
-                // --- 5. Noise (Glitch / Engine) ---
-                noiseGain = new Tone.Gain(0).connect(mainFilter);
+                // [Noise / Helicopter]: 直通 Master
+                noiseGain = new Tone.Gain(0).connect(masterLimiter);
                 noiseSynth = new Tone.Noise("pink").start();
-                // 爆炸专用 Filter
-                const noiseFilter = new Tone.Filter(500, "lowpass").connect(noiseGain);
+                noiseFilter = new Tone.Filter(800, "lowpass").connect(noiseGain);
                 noiseSynth.connect(noiseFilter);
 
+                // 专用 LFO
+                sirenLFO = new Tone.LFO(0.5, 400, 600).start(); // 0.5Hz 的警报起伏
+
+                // 3. Transport
                 Tone.Transport.bpm.value = 120;
+                Tone.Transport.scheduleRepeat(globalTick, "16n");
+
+                await Tone.start();
+                Tone.Transport.start();
+
                 applyPreset(0);
                 updateIntensity(0);
 
-                console.log('✅ 音频引擎初始化成功 (v3.0)');
-            } catch (e) {
-                console.error("Audio Init Error:", e);
+                console.log('✅ 音频引擎 v4.1 (Stable Routing)');
+            } catch (e) { console.error("Audio Init Error:", e); }
+        }
+
+        // --- 全局节拍事件 ---
+        function globalTick(time) {
+            const position = Tone.Transport.position.split(':');
+            const beat = parseInt(position[1]);
+            const sixteenth = parseFloat(position[2]).toFixed(1);
+            const isDownbeat = (sixteenth === "0.0");
+
+            // 和弦切换
+            const measure = parseInt(position[0]);
+            currentChordIndex = Math.floor(measure / 2) % chordProgression.length;
+            const chord = chordProgression[currentChordIndex];
+
+            // === 1. CLASSICAL ===
+            if (currentFingers === 0) {
+                // Piano (Base): 始终稳固
+                // 只有 Level 0+ 且有能量时弹，作为基底
+                if (currentEnergy > 5 && (isDownbeat || currentEnergy > 50)) {
+                    leadSynth.triggerAttackRelease(
+                        chord[Math.floor(Math.random() * chord.length)],
+                        "16n", time
+                    );
+                }
+
+                // Strings (Lv2+): 干音叠加
+                if (currentIntensity >= 1 && beat === 0 && isDownbeat) {
+                    droneSynth.frequency.rampTo(chord[0], 0.1);
+                }
+
+                // Brass (Lv3+): 干音点缀
+                if (currentIntensity >= 2 && beat === 0 && isDownbeat) {
+                    if (currentVelocity > 40) { // 稍微用力才出来
+                        organSynth.triggerAttackRelease([chord[0], chord[4] || chord[1]], "4n", time, 0.8);
+                    }
+                }
+
+                // Tutti (Lv4): 混响开启 (见 updateIntensity)
+            }
+
+            // === 2. CYBERPUNK ===
+            else if (currentFingers === 1) {
+                // Kick (Base): 显著加强
+                if (currentEnergy > 5) {
+                    if (isDownbeat) {
+                        kickSynth.triggerAttackRelease("C1", "8n", time, 1.2); // Velocity 1.2 增强力度
+                    } else if (currentEnergy > 80 && Math.random() > 0.6) {
+                        kickSynth.triggerAttackRelease("C1", "16n", time, 1.0);
+                    }
+                }
+
+                // Guitar (Lv2+): 干音，清晰
+                if (currentIntensity >= 1 && currentEnergy > 20 && Math.random() > 0.6) {
+                    const note = cyberScale[Math.floor(Math.random() * cyberScale.length)];
+                    leadSynth.triggerAttackRelease(note, "16n", time, 0.7); // 音量稍收，不抢 Kick
+                }
+
+                // Bass (Lv3+): 补充低频
+                if (currentIntensity >= 2 && !isDownbeat && sixteenth === "2.0") {
+                    droneSynth.frequency.value = "D2";
+                }
+            }
+
+            // === 3. WARZONE ===
+            else if (currentFingers === 2) {
+                // Drone (Lv1): 始终由 Base 负责，在 playPerformanceNote 里做动态
+
+                // Siren (Lv3): 警报
+                if (currentIntensity >= 2) {
+                    // 双音效果由 organSynth 模拟
+                    if (isDownbeat && beat % 4 === 0) { // 长警报
+                        // 两个音稍微走调，制造紧张感
+                        organSynth.triggerAttackRelease(["A4", "A#4"], "1m", time, 0.4);
+                    }
+                }
             }
         }
 
@@ -178,244 +267,128 @@
 
             leadSynth.releaseAll();
             organSynth.releaseAll();
+            sirenLFO.stop();
+
+            // 路由还原
+            noiseGain.disconnect();
+            noiseGain.connect(masterLimiter); // 默认直通
+            heliTremolo.wet.value = 0; // 关闭 Tremolo
+
+            if (presetId === 2) {
+                sirenLFO.start();
+                // Warzone 特殊路由: Noise 通过 Tremolo
+                noiseGain.disconnect();
+                noiseGain.connect(heliTremolo);
+                heliTremolo.wet.value = 1;
+            }
 
             currentFingers = presetId;
             presetDisplay.innerText = stylePresets[presetId].name;
 
-            // 停止之前的 Loop
-            if (currentArpeggiator) { currentArpeggiator.stop(); currentArpeggiator.dispose(); currentArpeggiator = null; }
-
-            // 重置 LFO 连接
-            helicopterLFO.disconnect();
-
             switch (presetId) {
-                case 0: // CLASSICAL
-                    configClassical();
-                    startClassicalArp();
-                    break;
-                case 1: // CYBER PUNK
-                    configCyberpunk();
-                    break;
-                case 2: // WARZONE
-                    configWarzone();
-                    break;
+                case 0: configClassical(); break;
+                case 1: configCyberpunk(); break;
+                case 2: configWarzone(); break;
             }
-            // 切换音色时重置层级
             updateIntensity(0);
         }
 
-        // 更新层级 (0-3)
+        // 手势触发事件 (动态控制)
+        function playPerformanceNote(velocity, energy) {
+            if (Tone.context.state !== 'running') Tone.context.resume();
+            currentVelocity = velocity;
+            currentEnergy = energy;
+
+            // WARZONE Drone 动态: 近大远小
+            if (currentFingers === 2) {
+                // 只有 Drone 开启时 (Lv1+)
+                // 速度越快(近)，Filter 越开，且音量越大
+                const dynamicVol = Tone.gainToDb(0.4 + (velocity / 200) * 0.4); // 0.4 ~ 0.8
+                droneGain.gain.rampTo(Tone.dbToGain(dynamicVol), 0.1);
+
+                // 额外的风阻感: 速度越快，频率稍微 Detune
+                droneSynth.detune.rampTo(velocity > 50 ? (velocity - 50) : 0, 0.1);
+            }
+
+            // WARZONE Explosion (Lv4)
+            if (currentFingers === 2 && currentIntensity >= 3) {
+                if (velocity > 120 && Tone.now() - lastTriggerTime > 1) {
+                    // 炸弹穿插其中，不压低 Drone
+                    kickSynth.triggerAttackRelease("G0", "1n", "+0", 1.5); // 极重低音
+                    noiseSynth.type = "brown";
+                    noiseGain.gain.cancelScheduledValues(Tone.now());
+                    noiseGain.gain.setValueAtTime(1, Tone.now());
+                    noiseGain.gain.exponentialRampTo(0, 3, Tone.now() + 3); // 长尾音
+                    lastTriggerTime = Tone.now();
+                }
+            }
+        }
+
         function updateIntensity(level) {
             currentIntensity = level;
-            const rampTime = 0.5;
+            const t = 0.5;
+            const now = Tone.now();
 
-            if (currentFingers === 0) { // CLASSICAL: Piano > Strings > Trumpet > Organ
-                // Lv1: Piano (始终有)
-                leadGain.gain.rampTo(1, rampTime);
-
-                // Lv2: + Violin (Bright Sawtooth)
-                droneGain.gain.rampTo(level >= 1 ? 0.2 : 0, rampTime);
-
-                // Lv3: + Trumpet (KickSynth模拟不出来，用 LeadSynth 的高音部或 OrganSynth 模拟)
-                // 这里我们开启 OrganSynth 的某个通道作为 Trumpet
-                // 简单点，用 OrganSynth 模拟 Brass 
-                organGain.gain.rampTo(level >= 2 ? 0.4 : 0, rampTime);
-
-                // Lv4: + Full Organ / Bass (Kick)
-                kickGain.gain.rampTo(level >= 3 ? 0.5 : 0, rampTime);
-            }
-            else if (currentFingers === 1) { // CYBER PUNK: Kick > Guitar > Bass > Noise
-                // Lv1: Kick (始终有)
-                kickGain.gain.rampTo(0.8, rampTime);
-
-                // Lv2: + Guitar (Lead)
-                leadGain.gain.rampTo(level >= 1 ? 0.7 : 0, rampTime);
-
-                // Lv3: + Bass (Drone)
-                droneGain.gain.rampTo(level >= 2 ? 0.6 : 0, rampTime);
-
-                // Lv4: + Noise
-                noiseGain.gain.rampTo(level >= 3 ? 0.2 : 0, rampTime);
-            }
-            else if (currentFingers === 2) { // WARZONE: Drone > Heli > Siren > Boom
-                // Lv1: Drone (Deep)
-                droneGain.gain.rampTo(0.5, rampTime);
-
-                // Lv2: + Helicopter (Noise modulated)
-                noiseGain.gain.rampTo(level >= 1 ? 0.4 : 0, rampTime);
-
-                // Lv3: + Siren (Lead FM)
-                leadGain.gain.rampTo(level >= 2 ? 0.4 : 0, rampTime);
-
-                // Lv4: + Explosion (Kick Impact)
-                kickGain.gain.rampTo(level >= 3 ? 1 : 0, rampTime);
-            }
-        }
-
-        // 配置: Classical
-        function configClassical() {
-            // Piano
-            leadSynth.set({
-                oscillator: { type: "triangle" },
-                envelope: { attack: 0.01, decay: 0.3, sustain: 0.1, release: 0.8 }
-            });
-            // Violin (Bright)
-            droneSynth.type = "sawtooth";
-            droneSynth.frequency.value = "A4"; // 高音弦乐
-            // Trumpet/Brass (using OrganSynth)
-            organSynth.set({
-                oscillator: { type: "sawtooth" }, // 铜管用锯齿波
-                envelope: { attack: 0.05, decay: 0.2, sustain: 0.5, release: 0.5 }
-            });
-            // Full Organ/Bass (using KickSynth for deep bass)
-            kickSynth.set({ pitchDecay: 0.05, octaves: 4 });
-        }
-
-        // 配置: Cyberpunk
-        function configCyberpunk() {
-            // Guitar (Lead) - 此处模拟电吉他
-            leadSynth.set({
-                oscillator: { type: "sawtooth" }, // 锯齿波更像失真吉他
-                envelope: { attack: 0.01, decay: 0.2, sustain: 0.8, release: 0.5 },
-                modulationIndex: 10
-            });
-            // Bass
-            droneSynth.type = "square"; // 方波 Bass
-            droneSynth.frequency.value = "D1"; // 低频
-            // Kick
-            kickSynth.set({ pitchDecay: 0.05, octaves: 8 });
-            // Noise
-            noiseSynth.type = "pink";
-        }
-
-        // 配置: Warzone
-        function configWarzone() {
-            // Drone
-            droneSynth.type = "sine";
-            droneSynth.frequency.value = "D1"; // 极低频
-            // Helicopter (Noise)
-            noiseSynth.type = "brown";
-            // LFO 调制 Noise Gain 来模拟螺旋桨
-            helicopterLFO.connect(noiseGain.gain);
-
-            // Siren (Lead)
-            leadSynth.set({
-                oscillator: { type: "sawtooth" },
-                envelope: { attack: 1, decay: 0, sustain: 1, release: 2 }, // 慢起慢落
-                portamento: 0.2 // 滑音
-            });
-            // Explosion (Kick)
-            kickSynth.set({
-                pitchDecay: 0.1,
-                octaves: 6,
-                envelope: { attack: 0.001, decay: 1, sustain: 0, release: 2 }
-            });
-        }
-
-        // Classical Arp (保持不变，很完美)
-        function startClassicalArp() {
-            currentArpeggiator = new Tone.Loop((time) => {
-                const energy = getAvgEnergy();
-                if (energy > 0.05) {
-                    const idx = Math.floor(energy * (scaleNotes.length - 1));
-                    leadSynth.triggerAttackRelease(scaleNotes[idx], "16n", time);
-                    if (energy > 0.6) {
-                        const nextIdx = (idx + 3) % scaleNotes.length;
-                        leadSynth.triggerAttackRelease(scaleNotes[nextIdx], "16n", time + Tone.Time("32n"));
-                    }
-                }
-            }, "8n").start(0);
-        }
-
-        // 主演逻辑
-        function playPerformanceNote(velocity, energy) {
-            const now = performance.now();
-            if (Tone.context.state !== 'running') Tone.context.resume();
+            // 核心混音逻辑: Lv4 才开 Global Reverb
+            mainReverb.wet.rampTo(level >= 3 ? 0.4 : 0, 2); // 慢慢进入混响
 
             if (currentFingers === 0) { // CLASSICAL
-                // Piano: Arp 自动演奏
-                // Violin: 随手势强弱变化音量/滤波
-                if (currentIntensity >= 1) {
-                    // 简单模拟: 速度越快，提琴越响/亮
-                    droneGain.gain.rampTo(Math.min(velocity / 200, 0.4), 0.1);
-                }
-                // Trumpet: 大幅度动作触发 (Lv2+)
-                if (currentIntensity >= 2 && velocity > 80 && now - lastTriggerTime > 300) {
-                    const note = scaleNotes[Math.floor(Math.random() * 4) + 4]; // 中高音区
-                    organSynth.triggerAttackRelease([note], "4n"); // 短促有力的铜管
-                    lastTriggerTime = now;
-                }
-                // Full Organ: 极强动作触发 (Lv3+)
-                if (currentIntensity >= 3 && energy > 0.8 && now - lastTriggerTime > 1000) {
-                    kickSynth.triggerAttackRelease("C1", "1n"); // 深沉低音
-                }
+                // Lv1: Piano (Base)
+                leadGain.gain.rampTo(1, t);
+                // Lv2: Violin (Dry)
+                droneGain.gain.rampTo(level >= 1 ? 0.4 : 0, t);
+                // Lv3: Brass (Dry)
+                organGain.gain.rampTo(level >= 2 ? 0.5 : 0, t);
             }
             else if (currentFingers === 1) { // CYBER PUNK
-                // Kick: 速率随速度变化 (Lv0+)
-                let kickInterval = 500; // 默认慢
-                if (energy > 0.6) kickInterval = 250; // 快
-                if (energy > 0.8) kickInterval = 125; // 极快
-
-                if (now - lastKickTime > kickInterval) {
-                    kickSynth.triggerAttackRelease("C1", "8n");
-                    lastKickTime = now;
-                }
-
-                // Guitar: 动态演奏 (Lv1+)
-                if (currentIntensity >= 1) {
-                    if (velocity < 40) {
-                        // 慢速: 长音/和弦
-                        if (now - lastTriggerTime > 800) {
-                            leadSynth.triggerAttackRelease(["D3", "F3", "A3"], "2n");
-                            lastTriggerTime = now;
-                        }
-                    } else {
-                        // 快速: 轮指 (Shredding)
-                        if (now - lastTriggerTime > (200 - velocity)) { // 速度越快间隔越短
-                            const idx = Math.floor(Math.random() * guitarScale.length);
-                            leadSynth.triggerAttackRelease(guitarScale[idx], "16n");
-                            lastTriggerTime = now;
-                        }
-                    }
-                }
-
-                // Bass (Drone) (Lv2+)
-
-                // Noise (Lv3+)
-                if (currentIntensity >= 3 && velocity > 100) {
-                    noiseGain.gain.rampTo(0.3, 0.1);
-                    noiseGain.gain.rampTo(0, 0.5); // 短促噪音
-                }
+                // Lv1: Kick (Base)
+                kickGain.gain.rampTo(1.2, t);
+                // Lv2: Guitar (Dry)
+                leadGain.gain.rampTo(level >= 1 ? 0.7 : 0, t);
+                // Lv3: Bass (Dry)
+                droneGain.gain.rampTo(level >= 2 ? 0.6 : 0, t);
+                // Lv4: Noise
+                noiseGain.gain.rampTo(level >= 3 ? 0.2 : 0, t);
             }
             else if (currentFingers === 2) { // WARZONE
-                // Drone (Lv0)
-
-                // Helicopter (Lv1) - 已经被 LFO 自动控制，这里可以控制 LFO 速率
-                if (currentIntensity >= 1) {
-                    // 速度越快，螺旋桨越快
-                    helicopterLFO.frequency.rampTo(5 + energy * 10, 0.5);
-                }
-
-                // Siren (Lv2)
-                if (currentIntensity >= 2) {
-                    // 手高低控制警报音高
-                    const pitch = 300 + energy * 500;
-                    leadSynth.triggerAttackRelease(pitch, "8n"); // 这里 PolySynth 也能接受频率
-                }
-
-                // Explosion (Lv3) 猛烈触发
-                if (currentIntensity >= 3 && velocity > 120 && now - lastTriggerTime > 1000) {
-                    kickSynth.triggerAttackRelease("C0", "2n"); // 巨型爆炸
-                    // 配合 Noise 冲击
-                    noiseSynth.type = "brown";
-                    noiseGain.gain.value = 1;
-                    noiseGain.gain.exponentialRampTo(0, 2);
-                    lastTriggerTime = now;
-                }
+                // Lv1: Drone (Base) - 始终坚挺
+                droneGain.gain.rampTo(0.6, t);
+                // Lv2: Helicopter (扇叶感)
+                noiseGain.gain.rampTo(level >= 1 ? 0.5 : 0, t);
+                // Lv3: Siren (Warning)
+                organGain.gain.rampTo(level >= 2 ? 0.4 : 0, t);
+                // Lv4: Explosion (Triggered)
             }
+        }
 
-            energyBuffer.push(energy);
-            if (energyBuffer.length > 30) energyBuffer.shift();
+        // --- 音色配置 ---
+        function configClassical() {
+            leadSynth.set({ oscillator: { type: "triangle" } }); // Piano
+            droneSynth.type = "sawtooth"; // Strings
+            droneSynth.frequency.value = chordProgression[0][0];
+            if (droneFilter) droneFilter.type = "lowpass";
+            if (droneFilter) droneFilter.frequency.value = 1500; // 稍微亮一点
+            organSynth.set({ oscillator: { type: "sawtooth" }, envelope: { attack: 0.01, decay: 0.3, sustain: 0.5 } });
+        }
+
+        function configCyberpunk() {
+            leadSynth.set({ oscillator: { type: "sawtooth" } }); // 更亮的 Guitar
+            droneSynth.type = "square"; // Bass
+            if (droneFilter) droneFilter.type = "lowpass";
+            if (droneFilter) droneFilter.frequency.value = 400; // 闷一点的 Bass
+        }
+
+        function configWarzone() {
+            // Drone: 深沉
+            droneSynth.type = "sine";
+            droneSynth.frequency.value = "D1";
+
+            // Helicopter: Noise + LFO
+            noiseSynth.type = "brown";
+            if (droneFilter) droneFilter.type = "highpass"; // 对 Noise 无效，但这不重要
+
+            // Siren: 双音
+            organSynth.set({ oscillator: { type: "fatcustom", count: 2, spread: 20 }, portamento: 0.1 });
         }
 
         // 计算平均能量
