@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebSocket 音频引擎 - 体感DJ</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="visual-engine.js"></script>
     <style>
         body {
             background-color: #000;
@@ -21,55 +22,268 @@
         }
 
         #start-btn {
-            padding: 20px 40px;
-            font-size: 18px;
-            letter-spacing: 4px;
-            background: #fff;
-            color: #000;
-            border: none;
+            padding: 15px 35px;
+            font-size: 14px;
+            letter-spacing: 5px;
+            background: transparent;
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.4);
             cursor: pointer;
-            transition: all 0.4s;
+            transition: all 0.4s cubic-bezier(0.19, 1, 0.22, 1);
+            text-transform: uppercase;
         }
 
         #start-btn:hover {
-            background: #000;
-            color: #fff;
+            background: #fff;
+            color: #000;
             border: 1px solid #fff;
+            letter-spacing: 8px;
+        }
+
+        #start-btn.started {
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            background: #fff;
+            color: #000;
+            opacity: 0.8;
+        }
+
+        #start-btn.started::before {
+            content: "[ ";
+        }
+
+        #start-btn.started::after {
+            content: " ]";
         }
 
         #status {
             margin-top: 30px;
-            font-size: 14px;
-            opacity: 0.7;
+            font-size: 12px;
+            opacity: 0.8;
             letter-spacing: 2px;
+            display: flex;
+            align-items: center;
+            text-transform: uppercase;
         }
 
         #info {
             margin-top: 20px;
             text-align: center;
             line-height: 1.8;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
         }
 
         .dot {
             display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #f00;
-            margin-right: 8px;
+            width: 8px;
+            height: 8px;
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            margin-right: 10px;
+            transition: all 0.3s;
         }
 
         .dot.active {
-            background: #0f0;
+            background: #fff;
+            border-color: #fff;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+        }
+
+        /* =========================================
+           高级抽屉控制面板设计 (Settings Drawer)
+           ========================================= */
+        #menu-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 3000;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            padding: 10px;
+        }
+
+        #menu-btn span {
+            display: block;
+            width: 25px;
+            height: 2px;
+            background-color: rgba(255, 255, 255, 0.7);
+            transition: all 0.3s;
+        }
+
+        #menu-btn:hover span {
+            background-color: #fff;
+        }
+
+        #menu-btn.open span:nth-child(1) {
+            transform: translateY(7px) rotate(45deg);
+            background-color: #fff;
+        }
+
+        #menu-btn.open span:nth-child(2) {
+            opacity: 0;
+        }
+
+        #menu-btn.open span:nth-child(3) {
+            transform: translateY(-7px) rotate(-45deg);
+            background-color: #fff;
+        }
+
+        #settings-drawer {
+            position: absolute;
+            top: 0;
+            right: -300px;
+            width: 260px;
+            height: 100vh;
+            background: rgba(10, 10, 10, 0.9);
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            z-index: 2500;
+            transition: right 0.4s cubic-bezier(0.19, 1, 0.22, 1);
+            padding: 70px 20px 20px 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            color: #aaa;
+            font-size: 11px;
+            letter-spacing: 1px;
+            overflow-y: auto;
+        }
+
+        #settings-drawer.open {
+            right: 0;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .control-group label {
+            text-transform: uppercase;
+            color: #fff;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+            accent-color: #fff;
+            cursor: pointer;
+        }
+
+        .control-group select,
+        .control-group input[type="color"] {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 5px;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .control-group select option {
+            background: #111;
+        }
+
+        /* 个性化 Toggle 开关 */
+        .toggle-btn {
+            padding: 8px 0;
+            text-align: center;
+            border: 1px solid #fff;
+            background: transparent;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+        }
+
+        .toggle-btn.active {
+            background: #fff;
+            color: #000;
         }
     </style>
 </head>
 
 <body>
 
-    <button id="start-btn">启动音频系统</button>
+    <!-- 菜单按钮 (汉堡图标) -->
+    <button id="menu-btn">
+        <span></span><span></span><span></span>
+    </button>
+
+    <!-- 侧边设置抽屉 -->
+    <div id="settings-drawer">
+        <!-- 核心总控 -->
+        <div class="control-group">
+            <button id="visual-toggle" class="toggle-btn">ENABLE VISUAL</button>
+            <button id="crt-toggle" class="toggle-btn active" style="margin-top: 5px;">CRT SCANLINES: ON</button>
+        </div>
+
+        <!-- 视觉方案选择 -->
+        <div class="control-group">
+            <label for="visual-preset">Visual Pattern</label>
+            <select id="visual-preset">
+                <option value="0">Topological Wireframe</option>
+                <option value="1">Retro Flight Sim</option>
+                <option value="2" selected>Joy Division Waves</option>
+            </select>
+        </div>
+
+        <!-- 视觉表现推子 -->
+        <div class="control-group" data-vis="0,1,2">
+            <label>Motion Speed (视觉响应速度/柔和度)</label>
+            <input type="range" id="damping-slider" min="0.001" max="1.0" step="0.001" value="0.6">
+        </div>
+
+        <div class="control-group" data-vis="1">
+            <label>Flight Speed (飞行/前进基速)</label>
+            <input type="range" id="flight-speed-slider" min="0" max="20" step="1" value="10">
+        </div>
+
+        <div class="control-group" data-vis="1">
+            <label>Steer Sensitivity (飞行摇晃灵敏度)</label>
+            <input type="range" id="steering-sens-slider" min="0.0" max="1.0" step="0.1" value="0.2">
+        </div>
+
+        <div class="control-group" data-vis="2">
+            <label>Wave Height (波峰绝对高度)</label>
+            <input type="range" id="wave-amp-slider" min="0.1" max="2.0" step="0.1" value="0.2">
+        </div>
+
+        <div class="control-group" data-vis="2">
+            <label>Zoom (画面远近缩放)</label>
+            <input type="range" id="zoom-slider" min="0.3" max="3.0" step="0.1" value="1.0">
+        </div>
+
+        <div class="control-group" data-vis="0,1,2">
+            <label>Line Thickness (拉丝粗细)</label>
+            <input type="range" id="thickness-slider" min="0.1" max="2.0" step="0.1" value="0.5">
+        </div>
+
+        <div class="control-group" data-vis="0,1,2">
+            <label>Trail Persistence (残影停留)</label>
+            <input type="range" id="blur-slider" min="0.01" max="0.5" step="0.01" value="0.15">
+        </div>
+
+        <div class="control-group" data-vis="0,1,2">
+            <label>Line Color (主色调)</label>
+            <input type="color" id="color-picker" value="#ffffff">
+        </div>
+    </div>
+
+    <!-- 渲染载体 -->
+    <canvas id="visual-canvas"></canvas>
+    <div id="crt-overlay"></div>
+
+    <button id="start-btn">INITIALIZE SYSTEM</button>
     <div id="status">
-        <span class="dot" id="ws-dot"></span> WebSocket: <span id="ws-status">未连接</span>
+        <span class="dot" id="ws-dot"></span> <span id="ws-status" style="opacity: 0.6;">SYS.OFFLINE</span>
     </div>
     <div id="info">
         <div>速度: <span id="velocity">0</span> cm/s</div>
@@ -78,6 +292,112 @@
     </div>
 
     <script>
+        // === UI 交互逻辑提取 ===
+        const menuBtn = document.getElementById('menu-btn');
+        const settingsDrawer = document.getElementById('settings-drawer');
+        const visualToggle = document.getElementById('visual-toggle');
+        const crtToggle = document.getElementById('crt-toggle');
+        const visualCanvas = document.getElementById('visual-canvas');
+        const crtOverlay = document.getElementById('crt-overlay');
+
+        // 绑定获取参数
+        const presetSelect = document.getElementById('visual-preset');
+        const dampingSlider = document.getElementById('damping-slider');
+        const flightSpeedSlider = document.getElementById('flight-speed-slider');
+        const steeringSensSlider = document.getElementById('steering-sens-slider');
+        const waveAmpSlider = document.getElementById('wave-amp-slider');
+        const zoomSlider = document.getElementById('zoom-slider');
+        const thicknessSlider = document.getElementById('thickness-slider');
+        const blurSlider = document.getElementById('blur-slider');
+        const colorPicker = document.getElementById('color-picker');
+
+        // 更新控制面板控件的显示逻辑
+        function updateSliderVisibility() {
+            const currentPreset = presetSelect.value;
+            document.querySelectorAll('.control-group[data-vis]').forEach(el => {
+                if (el.getAttribute('data-vis').includes(currentPreset)) {
+                    el.style.display = 'block';
+                } else {
+                    el.style.display = 'none';
+                }
+            });
+        }
+        updateSliderVisibility();
+
+        let isVisualActive = false;
+        let isCRTActive = true;
+
+        // 当前选择的视觉 Preset（解绑声音设定，前端独立控制）
+        let activeVisualPreset = parseInt(presetSelect.value);
+
+        menuBtn.onclick = () => {
+            menuBtn.classList.toggle('open');
+            settingsDrawer.classList.toggle('open');
+        };
+
+        crtToggle.onclick = () => {
+            isCRTActive = !isCRTActive;
+            if (isCRTActive) {
+                crtOverlay.style.display = isVisualActive ? 'block' : 'none';
+                crtToggle.innerText = 'CRT SCANLINES: ON';
+                crtToggle.classList.add('active');
+            } else {
+                crtOverlay.style.display = 'none';
+                crtToggle.innerText = 'CRT SCANLINES: OFF';
+                crtToggle.classList.remove('active');
+            }
+        };
+
+        visualToggle.onclick = () => {
+            isVisualActive = !isVisualActive;
+            if (isVisualActive) {
+                visualCanvas.style.display = 'block';
+                if (isCRTActive) crtOverlay.style.display = 'block';
+                visualToggle.innerText = 'DISABLE VISUAL';
+                visualToggle.classList.add('active');
+
+                if (window.initVisualEngine) window.initVisualEngine();
+                // 把界面信息做极淡化处理
+                document.getElementById('info').style.opacity = '0.05';
+            } else {
+                visualCanvas.style.display = 'none';
+                crtOverlay.style.display = 'none';
+                visualToggle.innerText = 'ENABLE VISUAL';
+                visualToggle.classList.remove('active');
+                document.getElementById('info').style.opacity = '1';
+            }
+        };
+
+        // 监听前端视觉面板的所有变化并传给 Engine
+        const dispatchSettings = () => {
+            if (window.visualEngine) {
+                window.visualEngine.updateSettings({
+                    visPreset: parseInt(presetSelect.value),
+                    damping: parseFloat(dampingSlider.value),
+                    flightSpeed: parseFloat(flightSpeedSlider.value),
+                    steeringSens: parseFloat(steeringSensSlider.value),
+                    waveAmp: parseFloat(waveAmpSlider.value),
+                    zoom: parseFloat(zoomSlider.value),
+                    thickness: parseFloat(thicknessSlider.value),
+                    blurBase: parseFloat(blurSlider.value),
+                    color: colorPicker.value
+                });
+            }
+        };
+
+        presetSelect.addEventListener('change', (e) => {
+            updateSliderVisibility();
+            dispatchSettings();
+        });
+        dampingSlider.addEventListener('input', dispatchSettings);
+        flightSpeedSlider.addEventListener('input', dispatchSettings);
+        steeringSensSlider.addEventListener('input', dispatchSettings);
+        waveAmpSlider.addEventListener('input', dispatchSettings);
+        zoomSlider.addEventListener('input', dispatchSettings);
+        thicknessSlider.addEventListener('input', dispatchSettings);
+        blurSlider.addEventListener('input', dispatchSettings);
+        colorPicker.addEventListener('input', dispatchSettings);
+
         const startBtn = document.getElementById('start-btn');
         const wsStatus = document.getElementById('ws-status');
         const wsDot = document.getElementById('ws-dot');
@@ -405,7 +725,8 @@
 
             ws.onopen = () => {
                 console.log('✅ WebSocket 已连接');
-                wsStatus.innerText = '已连接';
+                wsStatus.innerText = 'LINK ESTABLISHED';
+                wsStatus.style.opacity = '1';
                 wsDot.classList.add('active');
                 ws.send(JSON.stringify({ type: 'register', client: 'browser' }));
             };
@@ -422,6 +743,11 @@
                             // 更新 UI 显示 (可选)
                         }
                         playPerformanceNote(data.velocity, data.energy);
+
+                        // 喂数据给视觉引擎！(传入陀螺仪角度实现真正的 3D 飞行控制)
+                        if (isVisualActive && window.visualEngine) {
+                            window.visualEngine.updateData(data.velocity, data.energy, data.rotation);
+                        }
                     }
                     else if (data.type === 'preset') {
                         applyPreset(data.value);
@@ -433,13 +759,15 @@
             };
             ws.onerror = (error) => {
                 console.error('❌ WebSocket 错误:', error);
-                wsStatus.innerText = '连接失败';
+                wsStatus.innerText = 'CONNECTION FAILED';
+                wsStatus.style.opacity = '0.6';
                 wsDot.classList.remove('active');
             };
 
             ws.onclose = () => {
                 console.log('⚠️ WebSocket 已断开');
-                wsStatus.innerText = '已断开';
+                wsStatus.innerText = 'SYS.OFFLINE';
+                wsStatus.style.opacity = '0.6';
                 wsDot.classList.remove('active');
             };
         }
@@ -451,9 +779,9 @@
                 initAudio();
                 Tone.Transport.start();
                 isStarted = true;
-                startBtn.innerText = '✅ 系统已启动';
+                startBtn.innerText = 'SYSTEM ACTIVE';
+                startBtn.classList.add('started');
                 startBtn.disabled = true;
-                startBtn.style.opacity = '0.5';
 
                 // 连接 WebSocket
                 connectWebSocket();

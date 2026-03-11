@@ -81,14 +81,27 @@ export default function App() {
       const avgEnergy = velocityBuffer.current.reduce((a, b) => a + b, 0) / velocityBuffer.current.length;
       setEnergy(Math.min(100, Math.round(avgEnergy)));
 
-      // 发送数据 (包含 intensity)
+      let rotAlpha = 0, rotBeta = 0, rotGamma = 0;
+      if (motionData.rotation && (Math.abs(motionData.rotation.beta) > 0.01 || Math.abs(motionData.rotation.gamma) > 0.01)) {
+        rotAlpha = motionData.rotation.alpha;
+        rotBeta = motionData.rotation.beta;
+        rotGamma = motionData.rotation.gamma;
+      } else if (motionData.accelerationIncludingGravity) {
+        // Fallback: 用重力加速度硬算手机的绝对物理倾斜
+        const ag = motionData.accelerationIncludingGravity;
+        rotGamma = Math.atan2(ag.x, Math.sqrt(ag.y * ag.y + ag.z * ag.z)); // 左右滚转
+        rotBeta = Math.atan2(ag.y, Math.sqrt(ag.x * ag.x + ag.z * ag.z));  // 前后俯仰
+      }
+
+      // 发送数据 (包含 intensity 和 rotation)
       if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: 'motion',
           velocity: instantVelocity,
           energy: avgEnergy,
           preset: currentPreset,
-          intensity: intensity // 发送新的层级信息
+          intensity: intensity,
+          rotation: { alpha: rotAlpha, beta: rotBeta, gamma: rotGamma }
         }));
       }
     });
