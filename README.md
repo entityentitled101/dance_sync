@@ -1,7 +1,38 @@
-# Dance Sync (体感生物声学)
+# 🎵 Dance Sync (跳舞音乐) - 互动声音系统
+
+## 🚀 快速演示指南 (Demo Quick Start)
+**给朋友展示时，请严格按照以下步骤操作（特别针对开启 VPN 时，解决局域网不通的问题）：**
+
+### 1. 启动 WebSocket 服务器 (终端 1)
+这是"大脑"，负责转发手机信号。
+```powershell
+cd expo-app
+node ws-server.js
+# 服务器启动后会自动过滤掉 VPN 的虚拟网卡，只显示真正的“局域网地址”（如 192.168.x.x）
+# 请记下屏幕上显示的这个局域网地址！
+```
+
+### 2. 启动 Expo 手机端 (终端 2 - 解决 VPN/虚拟网卡冲突的究极方案)
+在开启 VPN 时，Expo 有时误抓取虚拟网卡（比如 `26.x.x.x`）从而导致网络不通、报错 `fetch failed`。
+**为了强制使 Expo 绑定正确的真实局域网、并绕开外网检测，请运行以下格式的命令：**
+```powershell
+cd expo-app
+$env:REACT_NATIVE_PACKAGER_HOSTNAME="在这里填入第1步显示的局域网IP"; npx expo start --offline
+
+# 示例：如果第一步的地址是 192.168.1.92，那就运行下面这行：
+# $env:REACT_NATIVE_PACKAGER_HOSTNAME="192.168.1.92"; npx expo start --offline
+```
+> 等待出现二维码，用手机上的 **Expo Go** App 直接扫描即可瞬间连上！
+
+### 3. 连接音频引擎与手机 (客户端配置)
+1. **电脑端发声**：用浏览器双击打开根目录的 `index-websocket.html`，点击页面中央的 **"启动音频系统"**。
+2. **手机端连接**：在 App 界面输入框中填入**第 1 步**里的那个局域网 IP。
+3. 点击 **"连接服务器"**，开始挥动手机享受动态音乐！
+
+---
 
 > **当前版本**：v1.0.0 (WebSocket Audio Bridge)  
-> **状态**：✅ 稳定版 (Ready for Backup)  
+> **Git 状态**：✅ 已初始化 Git 仓库 (Local Backup Ready)  
 > **平台**：Expo (iOS/Android) + Web Browser (Audio Engine)
 
 本项目使用手机传感器捕捉实时运动数据 (速度/能量)，通过 WebSocket 桥接传输到浏览器端，驱动 Tone.js 生成动态电子音乐和交响乐。
@@ -40,43 +71,15 @@
 
 ---
 
-## 🚀 启动指南
+## 🛠️ 首次依赖安装
 
-### 1. 安装依赖
-
+如果你是第一次去别的电脑上运行这个项目，请先进入目录安装一次依赖：
 ```bash
 cd expo-app
 npm install ws
+npm install
 ```
-
-### 2. 启动 WebSocket 服务器 (必须第一步)
-
-在电脑终端运行：
-
-```bash
-cd expo-app
-node ws-server.js
-# 此时会显示: WebSocket 服务器已启动在 ws://localhost:8080
-```
-
-### 3. 启动 Expo App (手机端)
-
-在另一个终端运行：
-
-```bash
-cd expo-app
-npx expo start --tunnel
-```
-
-- 使用 Expo Go 扫码打开 App
-- **连接**: 输入电脑 IP (如 `192.168.1.92`)，点击"连接服务器"
-- **确认**: 看到 WebSocket 服务器日志显示 `📱 Expo App 已注册`
-
-### 4. 启动音频引擎 (电脑端)
-
-- 双击打开根目录下的 **`index-websocket.html`**
-- 点击页面中央的 **"启动音频系统"** 按钮
-- **确认**: 看到 WebSocket 服务器日志显示 `🌐 浏览器已注册`
+后续每次游玩展示，请直接参考页面最顶部的 **🚀 快速演示指南**。
 
 ---
 
@@ -96,7 +99,7 @@ npx expo start --tunnel
 
 ## 🛠️ 下一步开发计划 (Roadmap)
 
-1.  [ ] **GitHub 备份** (当前任务)
+1.  [x] **GitHub 备份** (The VPN & Network Crises Resolved)
 2.  [ ] **循环录音机 (Looper)**
     - 用户手势触发底鼓循环录制
     - 叠加多层音效

@@ -1,9 +1,40 @@
 const WebSocket = require('ws');
 
+const os = require('os');
+
+// 获取本机局域网 IP 地址
+function getLocalIp() {
+    const interfaces = os.networkInterfaces();
+    let backupIp = '127.0.0.1';
+    for (const devName in interfaces) {
+        // 跳过常见的虚拟网卡/VPN接口
+        if (devName.toLowerCase().includes('tap') || devName.toLowerCase().includes('vmware') || devName.toLowerCase().includes('virtual')) {
+            continue;
+        }
+        const iface = interfaces[devName];
+        for (let i = 0; i < iface.length; i++) {
+            const alias = iface[i];
+            if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
+                // 优先返回局域网常用网段 (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+                if (alias.address.startsWith('192.168.') || alias.address.startsWith('10.')) {
+                    return alias.address;
+                }
+                backupIp = alias.address;
+            }
+        }
+    }
+    return backupIp !== '127.0.0.1' ? backupIp : '127.0.0.1';
+}
+
+const localIp = getLocalIp();
+
 // 创建 WebSocket 服务器，监听 8080 端口
 const wss = new WebSocket.Server({ port: 8080 });
 
-console.log('🚀 WebSocket 服务器已启动在 ws://localhost:8080');
+console.log('🚀 WebSocket 服务器已启动');
+console.log(`📡 局域网地址: ws://${localIp}:8080`);
+console.log(`🏠 本地地址: ws://localhost:8080`);
+console.log('------------------------------------');
 console.log('等待连接...\n');
 
 let expoClient = null;  // Expo App 连接
