@@ -5,34 +5,53 @@ import {
   View,
   TouchableOpacity,
   Dimensions,
-  Modal,
   Platform,
   TextInput,
   Alert,
+  ScrollView,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { DeviceMotion } from 'expo-sensors';
 
 const { width, height } = Dimensions.get('window');
-// 音色预设配置 (3个核心音色)
+
+// 音色预设配置 (3个核心音色) - 仅主控手使用
 const PRESETS = [
   { id: 0, name: 'CLASSICAL', desc: '钢琴 | 提琴 | 铜管 | 全奏' },
   { id: 1, name: 'CYBER PUNK', desc: '底鼓 | 吉他 | 贝斯 | 噪音' },
   { id: 2, name: 'WARZONE', desc: '嗡鸣 | 螺旋桨 | 警报 | 爆炸' },
 ];
 
+// FX 模式定义 - 仅效果手使用
+const FX_MODES = [
+  { id: 'drum',  icon: '◎', name: 'DRUM',  desc: '体感架子鼓' },
+  { id: 'keys',  icon: '♪', name: 'KEYS',  desc: '和声琶音' },
+  { id: 'flute', icon: '≈', name: 'FLUTE', desc: '体感音高' },
+  { id: 'sfx',   icon: '◌', name: 'SFX',   desc: '白噪风声' },
+  { id: 'retro', icon: '▦', name: 'RETRO', desc: '8-Bit 芯片' },
+];
+
 export default function App() {
-  const [currentPreset, setCurrentPreset] = useState(0); // 默认钢琴
+  // ===== 角色状态 =====
+  const [role, setRole] = useState(null); // null = 未选择, 'main' = 主控手, 'fx' = 效果手
+
+  // ===== 共用状态 =====
   const [velocity, setVelocity] = useState(0);
   const [energy, setEnergy] = useState(0);
   const [wsConnected, setWsConnected] = useState(false);
   const [serverIp, setServerIp] = useState('192.168.1.92');
-  const [intensity, setIntensity] = useState(0); // 0-3 四个阶段
+
+  // ===== 主控手状态 =====
+  const [currentPreset, setCurrentPreset] = useState(0);
+  const [intensity, setIntensity] = useState(0);
+
+  // ===== 效果手状态 =====
+  const [fxMode, setFxMode] = useState('drum');
 
   const wsRef = useRef(null);
   const velocityBuffer = useRef([]);
 
-  // 连接到 WebSocket 服务器
+  // ===== 连接 WebSocket =====
   const connectWebSocket = () => {
     try {
       const ws = new WebSocket(`ws://${serverIp}:8080`);
@@ -40,8 +59,9 @@ export default function App() {
       ws.onopen = () => {
         console.log('✅ WebSocket 已连接');
         setWsConnected(true);
-        // 注册为 Expo 客户端
-        ws.send(JSON.stringify({ type: 'register', client: 'expo' }));
+        // 根据角色注册不同的客户端身份
+        const clientType = role === 'main' ? 'expo' : 'fx_controller';
+        ws.send(JSON.stringify({ type: 'register', client: clientType }));
       };
 
       ws.onerror = (error) => {
@@ -61,15 +81,16 @@ export default function App() {
     }
   };
 
-  // 启动传感器
+  // ===== 传感器数据采集 (两种角色共用，但发送不同类型的数据) =====
   useEffect(() => {
+    if (!role) return; // 未选择角色时不启动传感器
+
     DeviceMotion.setUpdateInterval(16); // ~60Hz
 
     const subscription = DeviceMotion.addListener((motionData) => {
       if (!motionData || !motionData.acceleration) return;
 
       const { x, y, z } = motionData.acceleration;
-      // 增加灵敏度
       const instantVelocity = Math.sqrt(x * x + y * y + z * z) * 120;
       setVelocity(Math.round(instantVelocity));
 
@@ -81,74 +102,129 @@ export default function App() {
       const avgEnergy = velocityBuffer.current.reduce((a, b) => a + b, 0) / velocityBuffer.current.length;
       setEnergy(Math.min(100, Math.round(avgEnergy)));
 
-      let rotAlpha = 0, rotBeta = 0, rotGamma = 0;
-      if (motionData.rotation && (Math.abs(motionData.rotation.beta) > 0.01 || Math.abs(motionData.rotation.gamma) > 0.01)) {
-        rotAlpha = motionData.rotation.alpha;
-        rotBeta = motionData.rotation.beta;
-        rotGamma = motionData.rotation.gamma;
-      } else if (motionData.accelerationIncludingGravity) {
-        // Fallback: 用重力加速度硬算手机的绝对物理倾斜
-        const ag = motionData.accelerationIncludingGravity;
-        rotGamma = Math.atan2(ag.x, Math.sqrt(ag.y * ag.y + ag.z * ag.z)); // 左右滚转
-        rotBeta = Math.atan2(ag.y, Math.sqrt(ag.x * ag.x + ag.z * ag.z));  // 前后俯仰
-      }
-
-      // 发送数据 (包含 intensity 和 rotation)
       if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: 'motion',
-          velocity: instantVelocity,
-          energy: avgEnergy,
-          preset: currentPreset,
-          intensity: intensity,
-          rotation: { alpha: rotAlpha, beta: rotBeta, gamma: rotGamma }
-        }));
+        if (role === 'main') {
+          // ===== 主控手：发送 motion 类型 =====
+          let rotAlpha = 0, rotBeta = 0, rotGamma = 0;
+          if (motionData.rotation && (Math.abs(motionData.rotation.beta) > 0.01 || Math.abs(motionData.rotation.gamma) > 0.01)) {
+            rotAlpha = motionData.rotation.alpha;
+            rotBeta = motionData.rotation.beta;
+            rotGamma = motionData.rotation.gamma;
+          } else if (motionData.accelerationIncludingGravity) {
+            const ag = motionData.accelerationIncludingGravity;
+            rotGamma = Math.atan2(ag.x, Math.sqrt(ag.y * ag.y + ag.z * ag.z));
+            rotBeta = Math.atan2(ag.y, Math.sqrt(ag.x * ag.x + ag.z * ag.z));
+          }
+
+          wsRef.current.send(JSON.stringify({
+            type: 'motion',
+            velocity: instantVelocity,
+            energy: avgEnergy,
+            preset: currentPreset,
+            intensity: intensity,
+            rotation: { alpha: rotAlpha, beta: rotBeta, gamma: rotGamma }
+          }));
+        } else {
+          // ===== 效果手：发送 fx_motion 类型 =====
+          // 额外发送 accY 用于笛子模式的音高映射
+          let accY = 0;
+          if (motionData.accelerationIncludingGravity) {
+            accY = motionData.accelerationIncludingGravity.y;
+          }
+          wsRef.current.send(JSON.stringify({
+            type: 'fx_motion',
+            velocity: instantVelocity,
+            energy: avgEnergy,
+            fxMode: fxMode,
+            accY: accY
+          }));
+        }
       }
     });
 
     return () => subscription && subscription.remove();
-  }, [wsConnected, currentPreset, intensity]); // 添加 intensity 依赖
+  }, [wsConnected, currentPreset, intensity, role, fxMode]);
 
-  // 切换音色
+  // ===== 主控手：切换音色 =====
   const switchPreset = (presetId) => {
     setCurrentPreset(presetId);
-    setIntensity(0); // 切换音色时重置层级
+    setIntensity(0);
     if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'preset',
-        value: presetId
-      }));
+      wsRef.current.send(JSON.stringify({ type: 'preset', value: presetId }));
     }
   };
 
-  // 改变层级
+  // ===== 主控手：改变层级 =====
   const changeIntensity = (newLevel) => {
     setIntensity(newLevel);
     if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'intensity',
-        value: newLevel
-      }));
+      wsRef.current.send(JSON.stringify({ type: 'intensity', value: newLevel }));
     }
   };
 
-  return (
-    <View style={styles.container}>
-      <StatusBar style="light" />
+  // ===== 效果手：切换 FX 模式 =====
+  const switchFxMode = (modeId) => {
+    setFxMode(modeId);
+    if (wsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'fx_mode', mode: modeId }));
+    }
+  };
 
-      {/* 顶部栏 */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>
-          {wsConnected ? '🟢 已连接' : '🔴 未连接'}
-        </Text>
+  // ===== 断开连接 =====
+  const disconnect = () => {
+    if (wsRef.current) wsRef.current.close();
+    setWsConnected(false);
+  };
+
+  // ====================================================
+  // 渲染：角色选择界面
+  // ====================================================
+  if (!role) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <View style={styles.roleSelectContainer}>
+          <Text style={styles.roleTitle}>DANCE SYNC</Text>
+          <Text style={styles.roleSubtitle}>选择控制器角色</Text>
+
+          <TouchableOpacity
+            style={styles.roleButton}
+            onPress={() => setRole('main')}
+          >
+            <Text style={styles.roleIcon}>◉</Text>
+            <Text style={styles.roleName}>主控手</Text>
+            <Text style={styles.roleDesc}>控制主旋律 · 和弦 · 能量</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.roleButton}
+            onPress={() => setRole('fx')}
+          >
+            <Text style={styles.roleIcon}>◎</Text>
+            <Text style={styles.roleName}>效果手</Text>
+            <Text style={styles.roleDesc}>鼓点 · 琶音 · 笛子 · 音效</Text>
+          </TouchableOpacity>
+        </View>
       </View>
+    );
+  }
 
-      {/* 连接界面 */}
-      {!wsConnected && (
+  // ====================================================
+  // 渲染：连接界面（两种角色共用）
+  // ====================================================
+  if (!wsConnected) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => { setRole(null); disconnect(); }}>
+            <Text style={styles.backText}>← 返回选择</Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.connectContainer}>
-          {/* ... (保持不变) ... */}
-          {/* 需要重新包含这里的组件，因为是全部替换 */}
-          <Text style={styles.connectTitle}>WebSocket 传感器</Text>
+          <Text style={styles.connectTitle}>
+            {role === 'main' ? '◉ 主控手' : '◎ 效果手'}
+          </Text>
           <Text style={styles.connectHint}>输入电脑 IP 地址</Text>
           <TextInput
             style={styles.ipInput}
@@ -158,10 +234,7 @@ export default function App() {
             placeholderTextColor="#666"
             keyboardType="decimal-pad"
           />
-          <TouchableOpacity
-            style={styles.connectButton}
-            onPress={connectWebSocket}
-          >
+          <TouchableOpacity style={styles.connectButton} onPress={connectWebSocket}>
             <Text style={styles.connectButtonText}>连接服务器</Text>
           </TouchableOpacity>
           <Text style={styles.connectInfo}>
@@ -169,93 +242,127 @@ export default function App() {
             node ws-server.js
           </Text>
         </View>
-      )}
+      </View>
+    );
+  }
 
-      {/* 主界面 */}
-      {wsConnected && (
-        <>
-          {/* 能量进度条 */}
-          <View style={styles.energySection}>
-            <View style={styles.progressBarContainer}>
-              <View style={[styles.progressBar, { width: `${energy}%` }]} />
-            </View>
-            <Text style={styles.energyText}>{energy}%</Text>
+  // ====================================================
+  // 渲染：主控手操作界面
+  // ====================================================
+  if (role === 'main') {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="light" />
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>◉ 主控手 · 🟢 已连接</Text>
+        </View>
+
+        {/* 能量进度条 */}
+        <View style={styles.energySection}>
+          <View style={styles.progressBarContainer}>
+            <View style={[styles.progressBar, { width: `${energy}%` }]} />
           </View>
+          <Text style={styles.energyText}>{energy}%</Text>
+        </View>
 
-          {/* 音色按钮 (3个并排) */}
-          <View style={styles.buttonsContainer}>
-            {PRESETS.map((preset) => (
+        {/* 音色按钮 */}
+        <View style={styles.buttonsContainer}>
+          {PRESETS.map((preset) => (
+            <TouchableOpacity
+              key={preset.id}
+              style={[styles.presetButton, currentPreset === preset.id && styles.presetButtonActive]}
+              onPress={() => switchPreset(preset.id)}
+            >
+              <Text style={[styles.presetButtonText, currentPreset === preset.id && styles.presetButtonTextActive]}>
+                {preset.name.split(' ')[0]}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <View style={styles.presetInfo}>
+          <Text style={styles.presetDesc}>{PRESETS[currentPreset].desc}</Text>
+        </View>
+
+        {/* 层级控制 */}
+        <View style={styles.intensityContainer}>
+          <Text style={styles.intensityTitle}>LAYER INTENSITY (层级叠加)</Text>
+          <View style={styles.intensityTrack}>
+            {[0, 1, 2, 3].map((level) => (
               <TouchableOpacity
-                key={preset.id}
-                style={[
-                  styles.presetButton,
-                  currentPreset === preset.id && styles.presetButtonActive
-                ]}
-                onPress={() => switchPreset(preset.id)}
+                key={level}
+                style={[styles.intensityStep, level <= intensity && styles.intensityStepActive]}
+                onPress={() => changeIntensity(level)}
               >
-                <Text style={[
-                  styles.presetButtonText,
-                  currentPreset === preset.id && styles.presetButtonTextActive
-                ]}>
-                  {preset.name.split(' ')[0]}
+                <Text style={{ color: level <= intensity ? '#000' : '#888', fontWeight: 'bold' }}>
+                  {level + 1}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
-
-          {/* 当前音色描述 */}
-          <View style={styles.presetInfo}>
-            <Text style={styles.presetDesc}>{PRESETS[currentPreset].desc}</Text>
+          <View style={styles.intensityLabels}>
+            <Text style={styles.intensityLabel}>Base (基础)</Text>
+            <Text style={styles.intensityLabel}>Full (全开)</Text>
           </View>
+        </View>
 
-          {/* 层级滑动控制 (自定义 UI) */}
-          <View style={styles.intensityContainer}>
-            <Text style={styles.intensityTitle}>LAYER INTENSITY (层级叠加)</Text>
-            <View style={styles.intensityTrack}>
-              {[0, 1, 2, 3].map((level) => (
-                <TouchableOpacity
-                  key={level}
-                  style={[
-                    styles.intensityStep,
-                    level <= intensity && styles.intensityStepActive
-                  ]}
-                  onPress={() => changeIntensity(level)}
-                >
-                  <Text style={{
-                    color: level <= intensity ? '#000' : '#888',
-                    fontWeight: 'bold'
-                  }}>
-                    {level + 1}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <View style={styles.intensityLabels}>
-              <Text style={styles.intensityLabel}>Base (基础)</Text>
-              <Text style={styles.intensityLabel}>Full (全开)</Text>
-            </View>
-          </View>
+        {/* 速度显示 */}
+        <View style={styles.infoSection}>
+          <Text style={styles.velocityLabel}>速度</Text>
+          <Text style={styles.velocityValue}>{velocity} cm/s</Text>
+        </View>
 
-          {/* 速度显示 */}
-          <View style={styles.infoSection}>
-            <Text style={styles.velocityLabel}>速度</Text>
-            <Text style={styles.velocityValue}>{velocity} cm/s</Text>
-          </View>
+        <TouchableOpacity style={styles.disconnectButton} onPress={disconnect}>
+          <Text style={styles.disconnectButtonText}>断开连接</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
-          {/* 断开按钮 */}
+  // ====================================================
+  // 渲染：效果手操作界面 (iPad 第二控制器)
+  // ====================================================
+  return (
+    <View style={styles.container}>
+      <StatusBar style="light" />
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>◎ 效果手 · 🟢 已连接</Text>
+      </View>
+
+      {/* FX 模式按钮网格 */}
+      <View style={styles.fxGrid}>
+        {FX_MODES.map((mode) => (
           <TouchableOpacity
-            style={styles.disconnectButton}
-            onPress={() => {
-              if (wsRef.current) {
-                wsRef.current.close();
-              }
-              setWsConnected(false);
-            }}
+            key={mode.id}
+            style={[styles.fxButton, fxMode === mode.id && styles.fxButtonActive]}
+            onPress={() => switchFxMode(mode.id)}
           >
-            <Text style={styles.disconnectButtonText}>断开连接</Text>
+            <Text style={[styles.fxIcon, fxMode === mode.id && styles.fxIconActive]}>{mode.icon}</Text>
+            <Text style={[styles.fxName, fxMode === mode.id && styles.fxNameActive]}>{mode.name}</Text>
+            <Text style={[styles.fxDesc, fxMode === mode.id && styles.fxDescActive]}>{mode.desc}</Text>
           </TouchableOpacity>
-        </>
-      )}
+        ))}
+      </View>
+
+      {/* 速度 + 能量显示 */}
+      <View style={styles.fxDataRow}>
+        <View style={styles.fxDataItem}>
+          <Text style={styles.fxDataLabel}>VEL</Text>
+          <Text style={styles.fxDataValue}>{velocity}</Text>
+        </View>
+        <View style={styles.fxDataItem}>
+          <Text style={styles.fxDataLabel}>NRG</Text>
+          <Text style={styles.fxDataValue}>{energy}</Text>
+        </View>
+        <View style={styles.fxDataItem}>
+          <Text style={styles.fxDataLabel}>MODE</Text>
+          <Text style={styles.fxDataValue}>{fxMode.toUpperCase()}</Text>
+        </View>
+      </View>
+
+      <TouchableOpacity style={styles.disconnectButton} onPress={disconnect}>
+        <Text style={styles.disconnectButtonText}>断开连接</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -266,6 +373,54 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     paddingTop: Platform.OS === 'ios' ? 50 : 30,
   },
+  // ===== 角色选择 =====
+  roleSelectContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 30,
+  },
+  roleTitle: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '200',
+    letterSpacing: 10,
+    marginBottom: 5,
+  },
+  roleSubtitle: {
+    color: '#666',
+    fontSize: 12,
+    letterSpacing: 3,
+    marginBottom: 50,
+  },
+  roleButton: {
+    width: '100%',
+    paddingVertical: 30,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  roleIcon: {
+    color: '#fff',
+    fontSize: 32,
+    marginBottom: 8,
+    opacity: 0.7,
+  },
+  roleName: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '300',
+    letterSpacing: 4,
+    marginBottom: 6,
+  },
+  roleDesc: {
+    color: '#666',
+    fontSize: 11,
+    letterSpacing: 2,
+  },
+
+  // ===== 通用 =====
   header: {
     paddingHorizontal: 20,
     paddingVertical: 15,
@@ -277,6 +432,11 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '300',
+    letterSpacing: 1,
+  },
+  backText: {
+    color: '#888',
+    fontSize: 14,
     letterSpacing: 1,
   },
   connectContainer: {
@@ -329,6 +489,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
   },
+
+  // ===== 主控手 =====
   energySection: {
     paddingHorizontal: 20,
     paddingVertical: 30,
@@ -351,7 +513,6 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     fontWeight: '300',
   },
-  // 重写按钮容器样式
   buttonsContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -389,7 +550,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontStyle: 'italic',
   },
-  // 层级控制样式 (更明显的推子风格)
   intensityContainer: {
     marginTop: 40,
     paddingHorizontal: 30,
@@ -403,11 +563,10 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     fontWeight: '600',
   },
-  // 模拟滑块轨道
   intensityTrack: {
     flexDirection: 'row',
-    height: 60,                // 加高，更易触控
-    backgroundColor: '#1a1a1a', // 深色轨道背景
+    height: 60,
+    backgroundColor: '#1a1a1a',
     borderRadius: 30,
     padding: 5,
     justifyContent: 'space-between',
@@ -416,9 +575,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#333',
   },
-  // 滑块按钮
   intensityStep: {
-    width: 50,                // 更大的触控区
+    width: 50,
     height: 50,
     borderRadius: 25,
     backgroundColor: '#333',
@@ -426,13 +584,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   intensityStepActive: {
-    backgroundColor: '#fff',   // 选中高亮
+    backgroundColor: '#fff',
     shadowColor: "#fff",
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 10,
     elevation: 5,
-    transform: [{ scale: 1.1 }] // 选中放大效果
+    transform: [{ scale: 1.1 }]
   },
   intensityLabels: {
     flexDirection: 'row',
@@ -446,7 +604,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 1,
   },
-
   infoSection: {
     marginTop: 20,
     alignItems: 'center',
@@ -475,5 +632,74 @@ const styles = StyleSheet.create({
     color: '#666',
     fontSize: 12,
     letterSpacing: 1,
+  },
+
+  // ===== 效果手 FX 界面 =====
+  fxGrid: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    padding: 10,
+    gap: 8,
+    alignContent: 'center',
+  },
+  fxButton: {
+    width: (width - 36) / 2,  // 两列布局
+    height: (height - 300) / 3,  // 三行
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fxButtonActive: {
+    borderColor: '#fff',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  fxIcon: {
+    fontSize: 28,
+    color: 'rgba(255,255,255,0.4)',
+    marginBottom: 6,
+  },
+  fxIconActive: {
+    color: '#fff',
+  },
+  fxName: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: 4,
+    fontWeight: '600',
+  },
+  fxNameActive: {
+    color: '#fff',
+  },
+  fxDesc: {
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.2)',
+    letterSpacing: 2,
+    marginTop: 4,
+  },
+  fxDescActive: {
+    color: 'rgba(255,255,255,0.5)',
+  },
+  fxDataRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 15,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+  },
+  fxDataItem: {
+    alignItems: 'center',
+  },
+  fxDataLabel: {
+    color: '#666',
+    fontSize: 9,
+    letterSpacing: 2,
+  },
+  fxDataValue: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '200',
+    marginTop: 2,
   },
 });

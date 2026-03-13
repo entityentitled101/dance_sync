@@ -86,9 +86,15 @@ npm install
 ## 📂 文件结构说明
 
 - **核心代码**:
-  - `expo-app/App.js` : React Native 传感器主程序 (WebSocket Client)
-  - `expo-app/ws-server.js` : WebSocket 中转服务器 (Node.js)
-  - `index-websocket.html` : 浏览器音频引擎 (Tone.js + WebSocket Client)
+  - `expo-app/App.js` : React Native 传感器主程序 (主控手，WebSocket Client)
+  - `expo-app/ws-server.js` : WebSocket 中转服务器 (支持三路客户端：主控手+效果手+浏览器)
+  - `index-websocket.html` : 浏览器音频引擎 (Tone.js + 双手 FX 层)
+  - `fx-controller.html` : iPad/手机 效果手控制器 (五种乐器模式: 鼓/琑音/笛子/白噪/芯片音)
+  - `visual-engine.js` : Canvas 视觉引擎 (3 套方案 + FPV 穿越)
+
+- **设计文档**:
+  - `VISUAL_CONCEPTS.md` : 视觉方案设计提案
+  - `MUSIC_THEORY.md` : 音乐交互架构与乐理设计蓝图
 
 - **已归档/不再使用**:
   - `index.html` (原 MediaPipe 版本，已废弃)
@@ -99,13 +105,17 @@ npm install
 
 ## 📝 最新更新日志 (Changelog)
 
-**v1.5.0 - The Visual Engine Overhaul (今日更新)**
-- 🎨 **极简黑白统一**：废除一切霓虹色与圆点设计，前端界面全面升级为克制的黑白科幻机甲风（Courier New 代码体、赛博折角边框系统状态栏）。
-- 🎛️ **参数控制台解耦与重构**：打散了硬编码，在右侧抽屉加入海量前端控制器（运动响应柔和度、大波峰倍率、飞行摇晃灵敏度等），针对目前不同画面显示对应专属推子；并且为各种推子精调了极度舒适且安全的黄金默认值。
-- 🛸 **复古星际飞行 (Retro FPV Flight)** 进化：
-  - 首创“零权限”体感飞行：因硬件读取可能被系统限制，全面采用**“运动能量驱动的程序化 FPV 随机甩尾引擎”**。用户只需挥动手机，随着能量爆发，画面自动计算极为拉风的 S 型大过载俯冲与侧倾漫游。
-  - 完美视差：新增了极其平坦无限延伸的复古跑道。加入天际线遮罩切除算法，彻底解决巨型行星（现在有光环和几何体行星变种）由于透视错误穿模至地下的 Bug。
-- ▲ **Joy Division 波形 (Unknown Pleasures 版)**：全面推翻高频点阵绘制，采用密集 80+ 层多重采样+三层嵌套分形噪波（Fractal Noise），高度还原专辑封面上中央爆裂、两侧收敛拉直的标志性山崖美学，并新增了支持深度放大的 Zoom 推子。
+**v1.5.0 - The Visual Engine Overhaul**
+- 🎨 极简黑白统一、参数控制台解耦、FPV 程序化穿越飞行、Joy Division 分形噪波波形、天际线遮罩切除、异形行星。
+
+**v2.0.0 - Dual Controller & FX Layer (今日更新)**
+- 🏛️ **双设备桥接架构**：WebSocket 服务器升级为三路转发 (主控手 + 效果手 + 浏览器)，支持手机+iPad 同时连接。
+- 🎹 **iPad FX 控制器** (`fx-controller.html`)：5 种乐器模式按钮 (DRUM/KEYS/FLUTE/SFX/RETRO)，采用统一黑白赛博美学，支持 iOS Safari DeviceMotion 传感器。
+- 🥁 **智能鼓组触发引擎**：根据挥动速度和连击频率自动切换 Kick（重击）/ Snare（中力）/ Hi-Hat（快速连击）/ Crash（暴力连击）。
+- 🎼 **调性笼琑音 (Scale Cage)**：KEYS 模式下所有音符被锁定在 D 小调五声音阶内，确保乱甩也不会跑调。
+- 🎶 **体感笛子 (FLUTE)**：iPad 垂直方向加速度映射音高，配合 Portamento 滑音实现真实的笛子吹奏体验。
+- 🌬️ **环境声場 (SFX)**：挥动控制白噪声滤波器开度，从低语微风到高频朋克风暴。
+- 🕹️ **8-Bit 芯片音 (RETRO)**：方波合成器随机触发五声音阶，配合飞行画面。
 
 ---
 

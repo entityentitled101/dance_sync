@@ -415,6 +415,13 @@
         let leadGain, kickGain, droneGain, organGain, noiseGain;
         let droneFilter, noiseFilter;
 
+        // === FX 层乐器 (效果手 / iPad 第二只手) ===
+        let fxKickSynth, fxMetalSynth, fxNoiseSynth, fxLeadSynth, fxFluteSynth, fxSquareSynth;
+        let fxKickGain, fxMetalGain, fxNoiseGain, fxLeadGain, fxFluteGain, fxSquareGain;
+        let fxNoiseFilter;
+        let fxLastTriggerTime = 0;
+        let fxCurrentMode = 'drum';
+
         // 状态变量
         let energyBuffer = [];
         let currentIntensity = 0;
@@ -497,10 +504,59 @@
                 await Tone.start();
                 Tone.Transport.start();
 
+                // ====== 初始化 FX 层乐器 ======
+                // Kick (重踏 / 地鼓) — 用于单次用力重击
+                fxKickGain = new Tone.Gain(0.9).connect(masterLimiter);
+                fxKickSynth = new Tone.MembraneSynth({
+                    pitchDecay: 0.08, octaves: 10,
+                    oscillator: { type: 'sine' },
+                    envelope: { attack: 0.001, decay: 0.3, sustain: 0, release: 0.8 }
+                }).connect(fxKickGain);
+
+                // Metal (锥 / Hi-Hat / Crash) — 用于快速连击
+                fxMetalGain = new Tone.Gain(0.5).connect(masterLimiter);
+                fxMetalSynth = new Tone.MetalSynth({
+                    frequency: 200, envelope: { attack: 0.001, decay: 0.1, release: 0.05 },
+                    harmonicity: 5.1, modulationIndex: 32, resonance: 2000, octaves: 1.5
+                }).connect(fxMetalGain);
+
+                // Noise (白器声 / 风声) — 用于 SFX 模式
+                fxNoiseGain = new Tone.Gain(0).connect(masterLimiter);
+                fxNoiseSynth = new Tone.Noise('white').start();
+                fxNoiseFilter = new Tone.Filter(200, 'lowpass').connect(fxNoiseGain);
+                fxNoiseSynth.connect(fxNoiseFilter);
+
+                // Lead / Keys (琴键琑音) — 用于 KEYS 模式 (三角波，明亮清快)
+                fxLeadGain = new Tone.Gain(0.6).connect(mainReverb);
+                fxLeadSynth = new Tone.PolySynth(Tone.Synth, {
+                    maxPolyphony: 4,
+                    options: {
+                        oscillator: { type: 'triangle' },
+                        envelope: { attack: 0.01, decay: 0.15, sustain: 0.1, release: 0.4 }
+                    }
+                }).connect(fxLeadGain);
+
+                // Flute (笛子 / 口哨) — 用于 FLUTE 模式 (正弦波 + Portamento 滑音)
+                fxFluteGain = new Tone.Gain(0.5).connect(mainReverb);
+                fxFluteSynth = new Tone.Synth({
+                    oscillator: { type: 'sine' },
+                    envelope: { attack: 0.08, decay: 0.3, sustain: 0.6, release: 0.5 },
+                    portamento: 0.15 // 丝滑的音高过渡
+                }).connect(fxFluteGain);
+                fxFluteSynth.triggerAttack('C4'); // 保持持续音，通过音量控制开关
+                fxFluteGain.gain.value = 0; // 默认静音
+
+                // Square (8-bit 合成器) — 用于 RETRO 模式
+                fxSquareGain = new Tone.Gain(0.3).connect(masterLimiter);
+                fxSquareSynth = new Tone.Synth({
+                    oscillator: { type: 'square' },
+                    envelope: { attack: 0.001, decay: 0.1, sustain: 0.02, release: 0.15 }
+                }).connect(fxSquareGain);
+
+                console.log('✅ 音频引擎 v5.0 (Dual Controller + FX Layer)');
+
                 applyPreset(0);
                 updateIntensity(0);
-
-                console.log('✅ 音频引擎 v4.1 (Stable Routing)');
             } catch (e) { console.error("Audio Init Error:", e); }
         }
 
@@ -755,6 +811,18 @@
                     else if (data.type === 'intensity') {
                         updateIntensity(data.value);
                     }
+
+                    // ===== 效果手 FX 数据处理 =====
+                    else if (data.type === 'fx_motion' && isStarted) {
+                        handleFxTrigger(data);
+                    }
+                    else if (data.type === 'fx_mode') {
+                        fxCurrentMode = data.mode;
+                        console.log('🏛️ FX 模式切换:', data.mode);
+                        // 切换模式时释放某些持续音
+                        if (data.mode !== 'flute' && fxFluteGain) fxFluteGain.gain.rampTo(0, 0.3);
+                        if (data.mode !== 'sfx' && fxNoiseGain) fxNoiseGain.gain.rampTo(0, 0.3);
+                    }
                 } catch (e) { console.error('消息解析失败:', e); }
             };
             ws.onerror = (error) => {
@@ -770,6 +838,94 @@
                 wsStatus.style.opacity = '0.6';
                 wsDot.classList.remove('active');
             };
+        }
+
+        // ===== FX 层即时触发引擎 (零延迟响应，额外添加在主旋律之上) =====
+        function handleFxTrigger(data) {
+            if (!fxKickSynth) return; // 保护：未初始化时跳过
+            const vel = data.velocity || 0;
+            const energy = data.energy || 0;
+            const mode = data.fxMode || fxCurrentMode;
+            const accY = data.accY || 0;
+            const now = Tone.now();
+
+            // 对数力度曲线 (0.0 ~ 1.0+)
+            const perceivedForce = Math.log2(1 + vel / 50) / Math.log2(3);
+            // 阈值：速度低于30时不触发任何声音
+            if (vel < 30 && mode !== 'flute' && mode !== 'sfx') return;
+
+            // ===== DRUM 模式 =====
+            if (mode === 'drum') {
+                const timeSinceLast = now - fxLastTriggerTime;
+                fxLastTriggerTime = now;
+
+                if (timeSinceLast < 0.12 && vel > 80) {
+                    // 连击极快 + 大力量 → Crash 锥片 (长尾音)
+                    fxMetalSynth.set({ envelope: { decay: 0.8, release: 0.5 } });
+                    fxMetalSynth.triggerAttackRelease('16n', now, Math.min(1, perceivedForce));
+                } else if (timeSinceLast < 0.2) {
+                    // 快速连击 → Hi-Hat (清脆短促)
+                    fxMetalSynth.set({ envelope: { decay: 0.05, release: 0.02 } });
+                    fxMetalSynth.triggerAttackRelease('32n', now, Math.min(0.8, perceivedForce * 0.7));
+                } else if (vel > 120) {
+                    // 重重一击 → 深沉地鼓 (Kick)
+                    fxKickSynth.triggerAttackRelease('C1', '8n', now, Math.min(1.5, perceivedForce * 1.2));
+                } else {
+                    // 普通中等力度 → 军鼓/Snare (短噪音爆裂)
+                    fxMetalSynth.set({ envelope: { decay: 0.15, release: 0.1 } });
+                    fxMetalSynth.triggerAttackRelease('16n', now, Math.min(1, perceivedForce * 0.9));
+                    // 叠加一点点 Kick 的体感
+                    fxKickSynth.triggerAttackRelease('E1', '16n', now, Math.min(0.5, perceivedForce * 0.3));
+                }
+            }
+
+            // ===== KEYS 模式 (调性笼琑音) =====
+            else if (mode === 'keys') {
+                // 当前和弦音 + 五声音阶的扩展 (调性笼内不允许跑调)
+                const safeNotes = [
+                    'D3', 'F3', 'G3', 'A3', 'C4',
+                    'D4', 'F4', 'G4', 'A4', 'C5',
+                    'D5', 'F5'
+                ];
+                // 根据速度决定同时弹几个音 (越快越密集)
+                const noteCount = vel > 100 ? 3 : (vel > 60 ? 2 : 1);
+                const picked = [];
+                for (let i = 0; i < noteCount; i++) {
+                    picked.push(safeNotes[Math.floor(Math.random() * safeNotes.length)]);
+                }
+                fxLeadSynth.triggerAttackRelease(picked, '16n', now, Math.min(0.8, perceivedForce * 0.6));
+            }
+
+            // ===== FLUTE 模式 (体感音高笛子) =====
+            else if (mode === 'flute') {
+                // accY 范围约 -10 到 +10 (iPad 竖着时 y≈10)
+                // 映射到 MIDI 音高范围: C3 (48) 到 C6 (84)
+                const midiBase = 48;
+                const midiRange = 36; // 3个八度
+                const normalizedY = (accY + 10) / 20; // 0.0 ~ 1.0
+                const midiNote = Math.round(midiBase + normalizedY * midiRange);
+                const freq = Tone.Frequency(midiNote, 'midi').toFrequency();
+
+                fxFluteSynth.frequency.rampTo(freq, 0.1);
+                // 根据速度控制音量 (手不动时渐弱，手动时响亮)
+                const targetVol = Math.min(0.6, perceivedForce * 0.5);
+                fxFluteGain.gain.rampTo(targetVol, 0.1);
+            }
+
+            // ===== SFX 模式 (白噪风声) =====
+            else if (mode === 'sfx') {
+                // 速度控制滤波器开度 + 音量
+                const filterFreq = 100 + (vel / 150) * 4000;
+                fxNoiseFilter.frequency.rampTo(filterFreq, 0.1);
+                fxNoiseGain.gain.rampTo(Math.min(0.5, perceivedForce * 0.4), 0.1);
+            }
+
+            // ===== RETRO 模式 (8-bit 芯片音) =====
+            else if (mode === 'retro') {
+                const retroScale = ['C4', 'D4', 'E4', 'G4', 'A4', 'C5', 'D5', 'E5'];
+                const note = retroScale[Math.floor(Math.random() * retroScale.length)];
+                fxSquareSynth.triggerAttackRelease(note, '32n', now, Math.min(0.8, perceivedForce * 0.6));
+            }
         }
 
         // 启动按钮

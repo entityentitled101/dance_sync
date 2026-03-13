@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>FX Controller — Dance Sync</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body {
+            background: #000; color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            height: 100vh; display: flex; flex-direction: column;
+            overflow: hidden; touch-action: none;
+        }
+
+        /* ===== 顶部状态栏 ===== */
+        .status-bar {
+            padding: 12px 20px; border-bottom: 1px solid rgba(255,255,255,0.15);
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+        }
+        .status-bar .dot {
+            width: 8px; height: 8px; border: 1px solid rgba(255,255,255,0.4);
+            display: inline-block; margin-right: 8px; transition: all 0.5s;
+        }
+        .status-bar .dot.active { background: #fff; box-shadow: 0 0 8px rgba(255,255,255,0.6); }
+
+        /* ===== 连接区 ===== */
+        .connect-area {
+            padding: 30px 20px; text-align: center;
+        }
+        .connect-area input {
+            background: transparent; border: 1px solid rgba(255,255,255,0.3);
+            color: #fff; padding: 12px 20px; font-family: inherit;
+            font-size: 18px; text-align: center; letter-spacing: 3px;
+            width: 280px; outline: none;
+        }
+        .connect-area input:focus { border-color: #fff; }
+        .connect-area button {
+            display: block; margin: 15px auto 0; padding: 12px 30px;
+            background: transparent; border: 1px solid rgba(255,255,255,0.5);
+            color: #fff; font-family: inherit; font-size: 12px;
+            letter-spacing: 4px; text-transform: uppercase; cursor: pointer;
+            transition: all 0.3s;
+        }
+        .connect-area button:hover { background: #fff; color: #000; }
+        .connect-area.connected { display: none; }
+
+        /* ===== 模式选择器（核心 UI） ===== */
+        .mode-grid {
+            flex: 1; display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(2, 1fr);
+            gap: 8px; padding: 12px;
+        }
+        .mode-btn {
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: transparent; cursor: pointer; transition: all 0.3s;
+            position: relative; overflow: hidden;
+        }
+        .mode-btn:active { transform: scale(0.97); }
+        .mode-btn.active {
+            border-color: #fff; background: rgba(255,255,255,0.08);
+            box-shadow: inset 0 0 30px rgba(255,255,255,0.05);
+        }
+        .mode-btn .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.7; }
+        .mode-btn.active .icon { opacity: 1; }
+        .mode-btn .label {
+            color: rgba(255,255,255,0.5); font-size: 11px;
+            letter-spacing: 4px; text-transform: uppercase;
+            font-family: 'Courier New', monospace;
+        }
+        .mode-btn.active .label { color: #fff; }
+        .mode-btn .sub {
+            color: rgba(255,255,255,0.25); font-size: 9px;
+            letter-spacing: 2px; margin-top: 4px;
+        }
+        .mode-btn.active .sub { color: rgba(255,255,255,0.5); }
+
+        /* 赛博切角 */
+        .mode-btn::before {
+            content: ''; position: absolute; top: -1px; left: -1px;
+            width: 14px; height: 14px;
+            border-top: 1px solid rgba(255,255,255,0.3);
+            border-left: 1px solid rgba(255,255,255,0.3);
+        }
+        .mode-btn::after {
+            content: ''; position: absolute; bottom: -1px; right: -1px;
+            width: 14px; height: 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.3);
+            border-right: 1px solid rgba(255,255,255,0.3);
+        }
+        .mode-btn.active::before, .mode-btn.active::after {
+            border-color: #fff;
+        }
+
+        /* ===== 底部数据显示 ===== */
+        .data-footer {
+            padding: 12px 20px; border-top: 1px solid rgba(255,255,255,0.15);
+            display: flex; justify-content: space-around; align-items: center;
+            font-size: 10px; letter-spacing: 2px; opacity: 0.5;
+        }
+        .data-footer span { font-size: 20px; font-weight: 200; opacity: 1; }
+
+        /* 隐藏已连接后的面板 */
+        .main-panel { display: none; flex-direction: column; flex: 1; }
+        .main-panel.visible { display: flex; }
+    </style>
+</head>
+
+<body>
+    <!-- 顶部状态栏 -->
+    <div class="status-bar">
+        <div><span class="dot" id="ws-dot"></span> <span id="ws-label">SYS.OFFLINE</span></div>
+        <div id="active-mode-label">—</div>
+    </div>
+
+    <!-- 连接区 -->
+    <div class="connect-area" id="connect-area">
+        <div style="color:rgba(255,255,255,0.3); font-size:10px; letter-spacing:5px; margin-bottom:20px;">FX CONTROLLER</div>
+        <input type="text" id="ip-input" placeholder="192.168.1.92" value="192.168.1.92">
+        <button id="connect-btn">CONNECT</button>
+        <div style="color:rgba(255,255,255,0.2); font-size:9px; margin-top:20px; letter-spacing:2px;">
+            在电脑终端运行 node ws-server.js 后<br>输入电脑 IP 地址
+        </div>
+    </div>
+
+    <!-- 主控制面板 -->
+    <div class="main-panel" id="main-panel">
+        <div class="mode-grid">
+            <div class="mode-btn active" data-mode="drum" id="btn-drum">
+                <div class="icon">◎</div>
+                <div class="label">DRUM</div>
+                <div class="sub">体感架子鼓</div>
+            </div>
+            <div class="mode-btn" data-mode="keys" id="btn-keys">
+                <div class="icon">♪</div>
+                <div class="label">KEYS</div>
+                <div class="sub">和声琶音</div>
+            </div>
+            <div class="mode-btn" data-mode="flute" id="btn-flute">
+                <div class="icon">≈</div>
+                <div class="label">FLUTE</div>
+                <div class="sub">体感音高</div>
+            </div>
+            <div class="mode-btn" data-mode="sfx" id="btn-sfx">
+                <div class="icon">◌</div>
+                <div class="label">SFX</div>
+                <div class="sub">白噪风声</div>
+            </div>
+            <div class="mode-btn" data-mode="retro" id="btn-retro">
+                <div class="icon">▦</div>
+                <div class="label">RETRO</div>
+                <div class="sub">8-Bit 芯片</div>
+            </div>
+            <!-- 第6格留空作呼吸空间，也可以未来扩展 -->
+            <div class="mode-btn" style="border-color:transparent; pointer-events:none;">
+                <div class="icon" style="opacity:0.15;">⊕</div>
+                <div class="label" style="opacity:0.15;"></div>
+            </div>
+        </div>
+
+        <div class="data-footer">
+            <div>VEL <span id="vel-display">0</span></div>
+            <div>NRG <span id="nrg-display">0</span></div>
+            <div>MODE <span id="mode-display">DRUM</span></div>
+        </div>
+    </div>
+
+    <script>
+        // ===== 状态 =====
+        let ws = null;
+        let currentMode = 'drum';
+        let isConnected = false;
+        let velocityBuffer = [];
+
+        const wsDot = document.getElementById('ws-dot');
+        const wsLabel = document.getElementById('ws-label');
+        const activeModeLabel = document.getElementById('active-mode-label');
+        const connectArea = document.getElementById('connect-area');
+        const mainPanel = document.getElementById('main-panel');
+        const ipInput = document.getElementById('ip-input');
+        const connectBtn = document.getElementById('connect-btn');
+        const velDisplay = document.getElementById('vel-display');
+        const nrgDisplay = document.getElementById('nrg-display');
+        const modeDisplay = document.getElementById('mode-display');
+
+        // ===== 模式按钮 =====
+        document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentMode = btn.getAttribute('data-mode');
+                modeDisplay.innerText = currentMode.toUpperCase();
+                activeModeLabel.innerText = currentMode.toUpperCase();
+
+                // 通知服务器模式切换
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'fx_mode', mode: currentMode }));
+                }
+            });
+        });
+
+        // ===== 连接 WebSocket =====
+        connectBtn.addEventListener('click', () => {
+            const ip = ipInput.value.trim();
+            if (!ip) return;
+            try {
+                ws = new WebSocket(`ws://${ip}:8080`);
+
+                ws.onopen = () => {
+                    isConnected = true;
+                    wsDot.classList.add('active');
+                    wsLabel.innerText = 'LINK.OK';
+                    connectArea.classList.add('connected');
+                    mainPanel.classList.add('visible');
+                    activeModeLabel.innerText = 'DRUM';
+                    ws.send(JSON.stringify({ type: 'register', client: 'fx_controller' }));
+                    startMotionCapture();
+                };
+                ws.onerror = () => { wsLabel.innerText = 'LINK.FAIL'; };
+                ws.onclose = () => {
+                    isConnected = false;
+                    wsDot.classList.remove('active');
+                    wsLabel.innerText = 'SYS.OFFLINE';
+                };
+            } catch (e) {
+                wsLabel.innerText = 'ERROR';
+            }
+        });
+
+        // ===== 传感器采集 (使用 Web DeviceMotion API，iPad Safari 兼容) =====
+        function startMotionCapture() {
+            // iOS 13+ 需要用户手势触发权限
+            if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+                DeviceMotionEvent.requestPermission().then(state => {
+                    if (state === 'granted') { bindMotion(); }
+                    else { alert('需要运动传感器权限'); }
+                }).catch(console.error);
+            } else {
+                bindMotion();
+            }
+        }
+
+        function bindMotion() {
+            window.addEventListener('devicemotion', (event) => {
+                if (!isConnected || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+                const acc = event.accelerationIncludingGravity || event.acceleration;
+                if (!acc) return;
+
+                const x = acc.x || 0;
+                const y = acc.y || 0;
+                const z = acc.z || 0;
+
+                const instantVelocity = Math.sqrt(x * x + y * y + z * z) * 120;
+
+                velocityBuffer.push(instantVelocity);
+                if (velocityBuffer.length > 30) velocityBuffer.shift();
+                const avgEnergy = velocityBuffer.reduce((a, b) => a + b, 0) / velocityBuffer.length;
+
+                velDisplay.innerText = Math.round(instantVelocity);
+                nrgDisplay.innerText = Math.round(Math.min(100, avgEnergy));
+
+                ws.send(JSON.stringify({
+                    type: 'fx_motion',
+                    velocity: instantVelocity,
+                    energy: Math.min(100, avgEnergy),
+                    fxMode: currentMode,
+                    accY: y  // 用于笛子模式的音高映射 (iPad 竖直时 y ≈ ±9.8)
+                }));
+            }, { passive: true });
+        }
+    </script>
+</body>
+</html>
