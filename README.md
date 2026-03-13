@@ -108,14 +108,11 @@ npm install
 **v1.5.0 - The Visual Engine Overhaul**
 - 🎨 极简黑白统一、参数控制台解耦、FPV 程序化穿越飞行、Joy Division 分形噪波波形、天际线遮罩切除、异形行星。
 
-**v2.0.0 - Dual Controller & FX Layer (今日更新)**
-- 🏛️ **双设备桥接架构**：WebSocket 服务器升级为三路转发 (主控手 + 效果手 + 浏览器)，支持手机+iPad 同时连接。
-- 🎹 **iPad FX 控制器** (`fx-controller.html`)：5 种乐器模式按钮 (DRUM/KEYS/FLUTE/SFX/RETRO)，采用统一黑白赛博美学，支持 iOS Safari DeviceMotion 传感器。
-- 🥁 **智能鼓组触发引擎**：根据挥动速度和连击频率自动切换 Kick（重击）/ Snare（中力）/ Hi-Hat（快速连击）/ Crash（暴力连击）。
-- 🎼 **调性笼琑音 (Scale Cage)**：KEYS 模式下所有音符被锁定在 D 小调五声音阶内，确保乱甩也不会跑调。
-- 🎶 **体感笛子 (FLUTE)**：iPad 垂直方向加速度映射音高，配合 Portamento 滑音实现真实的笛子吹奏体验。
-- 🌬️ **环境声場 (SFX)**：挥动控制白噪声滤波器开度，从低语微风到高频朋克风暴。
-- 🕹️ **8-Bit 芯片音 (RETRO)**：方波合成器随机触发五声音阶，配合飞行画面。
+**v2.1.0 - Performance & Master FX (最新更新)**
+- ⚡ **超前排程逻辑 (Look-ahead)**：音频引擎引入 50ms 预缓冲与 Smart Throttling 节流，有效消除高频手势消息导致的 Glitch 音爆与系统卡死，响应快如闪电且稳如磐石。
+- 🔊 **FX 爆发力增强**：效果手 App 新增 `LOUDNESS`（0.5x - 4.0x）与 `TRANSPOSE`（±12 半音）步进推子，支持实时移调与 4 倍音量增益叠加。
+- 🔗 **状态强制对齐**：主控手运动帧自带 Preset 状态广播，彻底解决浏览器端中途加入或断连后音色不同步的顽疾。
+- 🎹 **FX 声道扩容**：将 Keys 模式聚音数提升至 8 轨，音色连贯性大幅增强。
 
 ---
 

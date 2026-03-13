@@ -421,6 +421,8 @@
         let fxNoiseFilter;
         let fxLastTriggerTime = 0;
         let fxCurrentMode = 'drum';
+        let fxOverallVol = 1.0;   // FX 层全局音量倍率
+        let fxOverallPitch = 0;   // FX 层全局音高偏移 (半音)
 
         // 状态变量
         let energyBuffer = [];
@@ -529,7 +531,7 @@
                 // Lead / Keys (琴键琑音) — 用于 KEYS 模式 (三角波，明亮清快)
                 fxLeadGain = new Tone.Gain(0.6).connect(mainReverb);
                 fxLeadSynth = new Tone.PolySynth(Tone.Synth, {
-                    maxPolyphony: 4,
+                    maxPolyphony: 8, // 调大聚音数，防止声音被掐断
                     options: {
                         oscillator: { type: 'triangle' },
                         envelope: { attack: 0.01, decay: 0.15, sustain: 0.1, release: 0.4 }
@@ -793,11 +795,17 @@
                     if (data.type === 'motion' && isStarted) {
                         velocityDisplay.innerText = Math.round(data.velocity);
                         energyDisplay.innerText = Math.round(data.energy);
-                        // 实时更新层级 (如果 App 发送了 intensity)
+                        
+                        // 实时同步预设 (防止浏览器中途加入导致不一致)
+                        if (data.preset !== undefined && data.preset !== currentFingers) {
+                            applyPreset(data.preset);
+                        }
+
+                        // 实时更新层级
                         if (data.intensity !== undefined && data.intensity !== currentIntensity) {
                             updateIntensity(data.intensity);
-                            // 更新 UI 显示 (可选)
                         }
+
                         playPerformanceNote(data.velocity, data.energy);
 
                         // 喂数据给视觉引擎！(传入陀螺仪角度实现真正的 3D 飞行控制)
@@ -814,6 +822,8 @@
 
                     // ===== 效果手 FX 数据处理 =====
                     else if (data.type === 'fx_motion' && isStarted) {
+                        if (data.fxVol !== undefined) fxOverallVol = data.fxVol;
+                        if (data.fxPitch !== undefined) fxOverallPitch = data.fxPitch;
                         handleFxTrigger(data);
                     }
                     else if (data.type === 'fx_mode') {
@@ -841,6 +851,8 @@
         }
 
         // ===== FX 层即时触发引擎 (零延迟响应，额外添加在主旋律之上) =====
+        let fxCoolDownMap = { drum: 0, keys: 0, retro: 0 }; // 触发冷却管理
+
         function handleFxTrigger(data) {
             if (!fxKickSynth) return; // 保护：未初始化时跳过
             const vel = data.velocity || 0;
@@ -848,11 +860,24 @@
             const mode = data.fxMode || fxCurrentMode;
             const accY = data.accY || 0;
             const now = Tone.now();
+            const schedTime = "+0.05"; // 关键：提前 0.05s 预排程，消除 Glitch
 
-            // 对数力度曲线 (0.0 ~ 1.0+)
-            const perceivedForce = Math.log2(1 + vel / 50) / Math.log2(3);
-            // 阈值：速度低于30时不触发任何声音
+            // 对数力度曲线 (0.0 ~ 1.0+) * FX音量倍率 (0~4x)
+            const perceivedForce = (Math.log2(1 + vel / 50) / Math.log2(3)) * fxOverallVol;
+            
+            // 阈值过滤
             if (vel < 30 && mode !== 'flute' && mode !== 'sfx') return;
+
+            // 节流机制：对于打击类音色，50ms 内只允许触发一次
+            if (['drum', 'keys', 'retro'].includes(mode)) {
+                if (performance.now() - fxCoolDownMap[mode] < 50) return;
+                fxCoolDownMap[mode] = performance.now();
+            }
+
+            // 获取带偏移的音阶/音符函数
+            const getPitch = (baseNote) => {
+                return Tone.Frequency(baseNote).transpose(fxOverallPitch).toNote();
+            };
 
             // ===== DRUM 模式 =====
             if (mode === 'drum') {
@@ -860,61 +885,50 @@
                 fxLastTriggerTime = now;
 
                 if (timeSinceLast < 0.12 && vel > 80) {
-                    // 连击极快 + 大力量 → Crash 锥片 (长尾音)
+                    // 连击极快 + 大力量 → Crash 锥片
                     fxMetalSynth.set({ envelope: { decay: 0.8, release: 0.5 } });
-                    fxMetalSynth.triggerAttackRelease('16n', now, Math.min(1, perceivedForce));
+                    fxMetalSynth.triggerAttackRelease('16n', schedTime, Math.min(1, perceivedForce));
                 } else if (timeSinceLast < 0.2) {
-                    // 快速连击 → Hi-Hat (清脆短促)
+                    // 快速连击 → Hi-Hat
                     fxMetalSynth.set({ envelope: { decay: 0.05, release: 0.02 } });
-                    fxMetalSynth.triggerAttackRelease('32n', now, Math.min(0.8, perceivedForce * 0.7));
+                    fxMetalSynth.triggerAttackRelease('32n', schedTime, Math.min(0.8, perceivedForce * 0.7));
                 } else if (vel > 120) {
-                    // 重重一击 → 深沉地鼓 (Kick)
-                    fxKickSynth.triggerAttackRelease('C1', '8n', now, Math.min(1.5, perceivedForce * 1.2));
+                    // 重重一击 → 深沉地鼓 (Kick) - 稍微调高一点 Kick 的基本频率以响应 Pitch 偏移
+                    const kickNote = Tone.Frequency("C1").transpose(fxOverallPitch).toNote();
+                    fxKickSynth.triggerAttackRelease(kickNote, '8n', schedTime, Math.min(1.5, perceivedForce * 1.2));
                 } else {
-                    // 普通中等力度 → 军鼓/Snare (短噪音爆裂)
+                    // 普通中等力度 → 军鼓/Snare
                     fxMetalSynth.set({ envelope: { decay: 0.15, release: 0.1 } });
-                    fxMetalSynth.triggerAttackRelease('16n', now, Math.min(1, perceivedForce * 0.9));
-                    // 叠加一点点 Kick 的体感
-                    fxKickSynth.triggerAttackRelease('E1', '16n', now, Math.min(0.5, perceivedForce * 0.3));
+                    fxMetalSynth.triggerAttackRelease('16n', schedTime, Math.min(1, perceivedForce * 0.9));
+                    fxKickSynth.triggerAttackRelease('E1', '16n', schedTime, Math.min(0.5, perceivedForce * 0.3));
                 }
             }
 
             // ===== KEYS 模式 (调性笼琑音) =====
             else if (mode === 'keys') {
-                // 当前和弦音 + 五声音阶的扩展 (调性笼内不允许跑调)
-                const safeNotes = [
-                    'D3', 'F3', 'G3', 'A3', 'C4',
-                    'D4', 'F4', 'G4', 'A4', 'C5',
-                    'D5', 'F5'
-                ];
-                // 根据速度决定同时弹几个音 (越快越密集)
+                const safeNotes = ['D3', 'F3', 'G3', 'A3', 'C4', 'D4', 'F4', 'G4', 'A4', 'C5', 'D5', 'F5'];
                 const noteCount = vel > 100 ? 3 : (vel > 60 ? 2 : 1);
                 const picked = [];
                 for (let i = 0; i < noteCount; i++) {
-                    picked.push(safeNotes[Math.floor(Math.random() * safeNotes.length)]);
+                    const note = getPitch(safeNotes[Math.floor(Math.random() * safeNotes.length)]);
+                    picked.push(note);
                 }
-                fxLeadSynth.triggerAttackRelease(picked, '16n', now, Math.min(0.8, perceivedForce * 0.6));
+                fxLeadSynth.triggerAttackRelease(picked, '16n', schedTime, Math.min(0.8, perceivedForce * 0.6));
             }
 
             // ===== FLUTE 模式 (体感音高笛子) =====
             else if (mode === 'flute') {
-                // accY 范围约 -10 到 +10 (iPad 竖着时 y≈10)
-                // 映射到 MIDI 音高范围: C3 (48) 到 C6 (84)
-                const midiBase = 48;
-                const midiRange = 36; // 3个八度
-                const normalizedY = (accY + 10) / 20; // 0.0 ~ 1.0
+                const midiBase = 48 + fxOverallPitch, midiRange = 36;
+                const normalizedY = (accY + 10) / 20;
                 const midiNote = Math.round(midiBase + normalizedY * midiRange);
                 const freq = Tone.Frequency(midiNote, 'midi').toFrequency();
-
                 fxFluteSynth.frequency.rampTo(freq, 0.1);
-                // 根据速度控制音量 (手不动时渐弱，手动时响亮)
                 const targetVol = Math.min(0.6, perceivedForce * 0.5);
                 fxFluteGain.gain.rampTo(targetVol, 0.1);
             }
 
             // ===== SFX 模式 (白噪风声) =====
             else if (mode === 'sfx') {
-                // 速度控制滤波器开度 + 音量
                 const filterFreq = 100 + (vel / 150) * 4000;
                 fxNoiseFilter.frequency.rampTo(filterFreq, 0.1);
                 fxNoiseGain.gain.rampTo(Math.min(0.5, perceivedForce * 0.4), 0.1);
@@ -923,10 +937,11 @@
             // ===== RETRO 模式 (8-bit 芯片音) =====
             else if (mode === 'retro') {
                 const retroScale = ['C4', 'D4', 'E4', 'G4', 'A4', 'C5', 'D5', 'E5'];
-                const note = retroScale[Math.floor(Math.random() * retroScale.length)];
-                fxSquareSynth.triggerAttackRelease(note, '32n', now, Math.min(0.8, perceivedForce * 0.6));
+                const note = getPitch(retroScale[Math.floor(Math.random() * retroScale.length)]);
+                fxSquareSynth.triggerAttackRelease(note, '32n', schedTime, Math.min(0.8, perceivedForce * 0.6));
             }
         }
+
 
         // 启动按钮
         startBtn.onclick = async () => {

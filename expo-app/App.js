@@ -47,6 +47,8 @@ export default function App() {
 
   // ===== 效果手状态 =====
   const [fxMode, setFxMode] = useState('drum');
+  const [fxVol, setFxVol] = useState(1.0);     // 0.5x - 4.0x
+  const [fxPitch, setFxPitch] = useState(0);   // -12 到 +12 (半音)
 
   const wsRef = useRef(null);
   const velocityBuffer = useRef([]);
@@ -136,7 +138,9 @@ export default function App() {
             velocity: instantVelocity,
             energy: avgEnergy,
             fxMode: fxMode,
-            accY: accY
+            accY: accY,
+            fxVol: fxVol,      // 传给浏览器
+            fxPitch: fxPitch   // 传给浏览器
           }));
         }
       }
@@ -354,9 +358,38 @@ export default function App() {
           <Text style={styles.fxDataLabel}>NRG</Text>
           <Text style={styles.fxDataValue}>{energy}</Text>
         </View>
-        <View style={styles.fxDataItem}>
-          <Text style={styles.fxDataLabel}>MODE</Text>
-          <Text style={styles.fxDataValue}>{fxMode.toUpperCase()}</Text>
+      </View>
+
+      {/* FX 全局控制: 音量与音高 */}
+      <View style={styles.fxControlsRow}>
+        <View style={styles.fxControlGroup}>
+          <Text style={styles.fxControlTitle}>LOUDNESS (音量倍率)</Text>
+          <View style={styles.fxControlSteps}>
+            {[0.5, 1.0, 2.0, 4.0].map((v) => (
+              <TouchableOpacity
+                key={v}
+                style={[styles.fxControlStep, fxVol === v && styles.fxControlStepActive]}
+                onPress={() => setFxVol(v)}
+              >
+                <Text style={[styles.fxStepText, fxVol === v && styles.fxStepTextActive]}>{v}x</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.fxControlGroup}>
+          <Text style={styles.fxControlTitle}>TRANSPOSE (音高偏移)</Text>
+          <View style={styles.fxControlSteps}>
+            {[-12, -7, 0, 7, 12].map((p) => (
+              <TouchableOpacity
+                key={p}
+                style={[styles.fxControlStep, fxPitch === p && styles.fxControlStepActive]}
+                onPress={() => setFxPitch(p)}
+              >
+                <Text style={[styles.fxStepText, fxPitch === p && styles.fxStepTextActive]}>{p > 0 ? `+${p}` : p}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
       </View>
 
@@ -701,5 +734,46 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '200',
     marginTop: 2,
+  },
+  // FX 控制条样式
+  fxControlsRow: {
+    paddingHorizontal: 20,
+    marginTop: 10,
+  },
+  fxControlGroup: {
+    marginBottom: 20,
+  },
+  fxControlTitle: {
+    color: '#666',
+    fontSize: 10,
+    letterSpacing: 2,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  fxControlSteps: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  fxControlStep: {
+    flex: 1,
+    height: 40,
+    borderWidth: 1,
+    borderColor: '#333',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 4,
+  },
+  fxControlStepActive: {
+    borderColor: '#fff',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  fxStepText: {
+    color: '#666',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  fxStepTextActive: {
+    color: '#fff',
   },
 });
